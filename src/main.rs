@@ -1,11 +1,12 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{
-    backend::arm32::{self, syscall_mapper::Architecture},
+    backend::{
+        arm32::{self, syscall_mapper::Architecture},
+        generator::generate,
+    },
     extra::config::load_config,
-    backend::generator::generate,
-    frontend::parser::parse,
-    frontend::tokenizer::tokenize,
+    frontend::{parser::parse, preprocessor, tokenizer::tokenize},
 };
 
 mod backend;
@@ -13,7 +14,9 @@ mod extra;
 mod frontend;
 
 fn main() {
-    let config = load_config("project.comfx");
+    let config_file = PathBuf::from("project.comfx");
+    let config = load_config(config_file.to_str().expect("Failed to convert config file path to a UTF-8 string"));
+
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
@@ -38,21 +41,27 @@ fn main() {
         .output
         .unwrap_or_else(|| format!("build/{}.s", file_stem));
 
+    let user_paths = vec![PathBuf::from("./src")];
+    let defines = config.defines.clone().unwrap_or_default();
+
+    let preprocessed_content =
+        match preprocessor::preprocess_file(input_path, &user_paths, &defines) {
+            Ok(content) => content,
+            Err(e) => {
+                eprintln!("Error preprocessing file {}: {}", input_path.display(), e);
+                std::process::exit(1);
+            }
+        };
+
     let verbose = args.get(2).map_or(false, |arg| arg == "--verbose");
 
-    let script = match std::fs::read_to_string(file_path) {
-        Ok(content) => content,
-        Err(e) => {
-            eprintln!("Error reading file {}: {}", file_path, e);
-            std::process::exit(1);
-        }
-    };
-
-    let tokens = tokenize(&script);
+    let tokens = tokenize(&preprocessed_content);
+    if verbose {
+        println!("Tokens: {:#?}", tokens);
+    }
     let ast_nodes = parse(tokens.clone());
     if verbose {
-        println!("AST Nodes: {:?}", ast_nodes);
-        println!("Tokens: {:?}", tokens);
+        println!("AST Nodes: {:#?}", ast_nodes);
     }
 
     let generator = generate(&ast_nodes, arch);
@@ -63,6 +72,7 @@ fn main() {
         generator.section_writer.text,
     );
     if verbose {
+        println!("\nPreprocessed Content:\n\n{}", preprocessed_content);
         println!("Generated Assembly Code:\n{}", assembly_code);
     }
 
@@ -80,7 +90,11 @@ fn main() {
     }
 
     match std::fs::write(output_path, assembly_code) {
-        Ok(_) => println!("Assembly code written to {} <3\nUsing architecture: {:?}", output_path.display(), arch),
+        Ok(_) => println!(
+            "Assembly code written to {} <3\nUsing architecture: {:?}",
+            output_path.display(),
+            arch
+        ),
         Err(e) => {
             eprintln!("Error writing to {}: {}", output_path.display(), e);
             std::process::exit(1);

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 #[allow(dead_code)]
@@ -5,6 +7,7 @@ use serde::Deserialize;
 pub struct ProjectConfig {
     pub target: TargetSection,
     pub meta: Option<MetaSection>,
+    pub defines: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -22,8 +25,11 @@ pub struct MetaSection {
 }
 
 pub fn load_config(path: &str) -> ProjectConfig {
-    let content = std::fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("Failed to read config file: {}", path));
-    toml::from_str(&content)
-        .unwrap_or_else(|_| panic!("Invalid TOML format in: {}", path))
+    let fallback = r#"[target]
+    arch = "arm32"
+    output = "build/main.s"
+    "#;
+ 
+    let content = std::fs::read_to_string(path).unwrap_or_else(|_| fallback.to_string());
+    toml::from_str(&content).unwrap_or_else(|_| panic!("Invalid TOML format in: {}", path))
 }

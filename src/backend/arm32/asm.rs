@@ -73,7 +73,6 @@ pub fn syscall_1arg(syscall_number: u32, arg0: &str) -> String {
     )
 }
 
-
 fn into_register_load(value: &str, register: &str) -> String {
     if value.chars().all(|c| c.is_ascii_digit()) {
         format!("mov {}, #{}", register, value)
@@ -90,6 +89,11 @@ pub fn mov_imm(reg: &str, value: usize) -> String {
 #[allow(dead_code)]
 pub fn ldr_label(reg: &str, label: &str) -> String {
     format!("\tldr {}, ={}", reg, label)
+}
+
+#[allow(dead_code)]
+pub fn store_into_reg(reg: &str, reg_to_store_in: usize) -> String {
+    format!("\tstr {}, [{}]\n", reg, reg_to_store_in)
 }
 
 #[allow(dead_code)]
@@ -134,14 +138,11 @@ pub fn load_syscall_return_value_into_reg(text: &mut Vec<String>) {
         reg.as_str(),
         RETURN_VALUE_BUF
     ));
-    
-    text.push(format!(
-        "\tldr {}, [{}]\n",
-        reg.as_str(),
-        reg.as_str()
-    ));
+
+    text.push(format!("\tldr {}, [{}]\n", reg.as_str(), reg.as_str()));
 }
 
+#[allow(dead_code)]
 pub fn load_syscall_return_value_into_label(text: &mut Vec<String>, label: &str) {
     let ptr_reg: Register = Register::R5;
 
@@ -164,7 +165,6 @@ pub fn load_syscall_return_value_into_label(text: &mut Vec<String>, label: &str)
     ));
 }
 
-
 // ========== UTILITY FUNCTIONS ==========
 
 pub fn generate_assembly(rodata: Vec<String>, bss: Vec<String>, text: Vec<String>) -> String {
@@ -177,7 +177,10 @@ pub fn generate_assembly(rodata: Vec<String>, bss: Vec<String>, text: Vec<String
     }
 
     assembly_code.push_str("\n.section .bss\n");
-    assembly_code.push_str(&format!("\t.comm {}, {}, {}\n", RETURN_VALUE_BUF, RETURN_VALUE_SIZE, RETURN_VALUE_BUF_ALLIGNMENT));
+    assembly_code.push_str(&format!(
+        "\t.comm {}, {}, {}\n",
+        RETURN_VALUE_BUF, RETURN_VALUE_SIZE, RETURN_VALUE_BUF_ALLIGNMENT
+    ));
     for bss_item in bss.iter() {
         assembly_code.push_str("\t");
         assembly_code.push_str(bss_item.as_str());

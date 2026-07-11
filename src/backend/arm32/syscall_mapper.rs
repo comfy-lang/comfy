@@ -15,6 +15,7 @@ fn arm32_syscalls() -> HashMap<&'static str, u32> {
         ("read", 3),
         ("write", 4),
         ("open", 5),
+        ("sysinfo", 143),
     ])
 }
 

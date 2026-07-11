@@ -6,3 +6,6 @@ output = "build/main.s"
 name = "comfy compiler"
 version = "0.1.0"
 author = "the luna company GbR"
+
+[defines]
+ENABLE_LOGGING = "true"

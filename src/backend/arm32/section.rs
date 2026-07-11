@@ -33,11 +33,13 @@ impl SectionWriter {
         self.bss.push(format!(".lcomm {}, {}", label, size));
     }
 
+    #[allow(dead_code)]
     pub fn declare_bss_with_name_prefix(&mut self, prefix: &str, name: &str, size: i32) {
         self.bss
             .push(format!(".lcomm {}_{}, {}", prefix, name, size));
     }
 
+    #[allow(dead_code)]
     pub fn declare_bss_with_len(&mut self, label: &str, size: i32) {
         self.bss.push(format!(".lcomm {}, {}", label, size));
         self.bss.push(format!("{}_len = {}", label, size));

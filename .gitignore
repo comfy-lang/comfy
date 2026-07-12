@@ -2,3 +2,5 @@
 testing.txt
 *.s
 /build
+result
+result-*

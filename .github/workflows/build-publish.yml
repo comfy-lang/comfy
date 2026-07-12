@@ -3,7 +3,7 @@ name: Build and Upload Binary
 on:
   push:
     tags:
-      - 'v*'  # Only run when you push a tag like v1.0.0
+      - "v*" # Only run when you push a tag like v1.0.0
 
 permissions:
   contents: write
@@ -25,7 +25,7 @@ jobs:
         run: cargo build --release
 
       - name: Strip binary (optional, to reduce size)
-        run: strip target/release/comfy
+        run: strip target/release/comfyc
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -37,6 +37,6 @@ jobs:
       - name: Upload binary to release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/comfy
+          files: target/release/comfyc
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

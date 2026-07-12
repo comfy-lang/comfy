@@ -8,7 +8,6 @@
 
   outputs =
     {
-      self,
       nixpkgs,
       flake-utils,
     }:
@@ -30,10 +29,9 @@
             pkgs.rust-analyzer
             armBinutils
             pkgs.qemu
-            pkgs.gdb-multiarch
           ];
 
-          COMFY_CROSS_PREFIX = crossPrefix;
+          COMFYC_CROSS_PREFIX = crossPrefix;
           QEMU_ARM = "${pkgs.qemu}/bin/qemu-arm";
 
           shellHook = ''

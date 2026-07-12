@@ -28,35 +28,36 @@ util/run.sh examples/exit_code.cfy
 
 ## Current language surface
 
-A single `fn main()` body, with variables, arithmetic, comparisons, `if`/`else`/`while`, and syscalls:
+`fn main()` plus any number of user-defined functions, with variables, arithmetic, comparisons, `if`/`else`/`while`, and syscalls:
 
 ```rust
-// examples/logic/if_while.cfy
+// examples/functions/basic_math.cfy
+fn add(a: int, b: int) -> int {
+    return a + b;
+}
+
+fn factorial(n: int) -> int {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
 fn main() {
-    let mut i = 0;
-    let mut sum = 0;
-
-    while i < 10 {
-        sum = sum + i;
-        i = i + 1;
-    }
-
-    if sum == 45 {
-        $syscall(1, 1, 0, 0, 0, 0, 0); // exit 1: correct
-    } else {
-        $syscall(1, 0, 0, 0, 0, 0, 0); // exit 0: wrong
-    }
+    let mut sum = add(2, 3);
+    let mut fact = factorial(5);
+    $syscall(1, sum + fact, 0, 0, 0, 0, 0); // exit 125
 }
 ```
 
 - `let NAME = expr;` is a compile-time constant, folded away entirely - it costs nothing at runtime, and must be provable at compile time.
 - `let mut NAME = expr;` is a real, stack-allocated local that can be reassigned with `NAME = expr;`.
 - Arithmetic (`+ - * / %`, unary `-`) is constant-folded when possible; runtime arithmetic falls back to a simple stack-machine codegen. Runtime (non-constant) `/` and `%` aren't supported yet - arm32 has no hardware divide instruction and the compiler is `-nostdlib`, so it can't call into libgcc for a software fallback.
-- Comparisons (`== != < <= > >=`) produce a real `bool`, and can't be chained (`a < b < c` doesn't parse. `if`/`while` conditions must be `bool`; comfy does not implicitly convert integers to booleans.
-- `$syscall(nr, a0, a1, a2, a3, a4, a5)` is the sole compiler intrinsic, usable as a statement or an expression (its return value, from `r0`, can be captured). It maps directly onto the Linux ARM EABI syscall convention. Named wrappers like `write`/`read`/`exit` will come back as ordinary standard-library functions built on top of this, once comfylang has real functions.
+- Comparisons (`== != < <= > >=`) produce a real `bool`, and can't be chained (`a < b < c` doesn't parse). `if`/`while` conditions must be `bool`; comfy does not implicitly convert integers to booleans.
+- Functions take typed parameters (`int`/`bool` so far) and an optional `-> Type` return; omitting it means the function returns `()`. Functions must end with a `return` statement if they return a value. Calls follow the AAPCS calling convention (up to 4 arguments in `r0`-`r3`, return value in `r0`) and recursion works.
+- `$syscall(nr, a0, a1, a2, a3, a4, a5)` is the sole compiler intrinsic, usable as a statement or an expression (its return value, from `r0`, can be captured). It maps directly onto the Linux ARM EABI syscall convention. Named wrappers like `write`/`read`/`exit` will come back as ordinary standard-library functions built on top of this, once comfylang has a standard library.
 
 More examples in [`examples/`](./examples).
-
 
 ## Design goals
 
@@ -75,7 +76,7 @@ Planned, in rough order:
 3. ~~Arithmetic + comparison expressions with precedence~~ ✅
 4. ~~Control flow (`if`/`else`, `while`)~~ ✅
 5. Logical operators (`&&`, `||`, `!`) with short-circuit evaluation
-6. User-defined functions, calling convention, recursion
+6. ~~User-defined functions, calling convention, recursion~~ ✅
 7. Pointers, arrays, `struct`s
 8. IR + optimization passes
 9. Additional backends (x86_64, ...), standard library, self-hosting prep

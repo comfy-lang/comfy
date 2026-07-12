@@ -12,11 +12,41 @@ pub struct CheckedProgram {
 
 pub struct CheckedFunction {
     pub name: String,
+    /// Total bytes to reserve on the stack for this function's `mut`
+    /// locals (each currently a 4-byte word, matching an ARM32 register).
+    pub frame_size: usize,
     pub body: Vec<CheckedStmt>,
 }
 
+/// An expression after semantic analysis: either fully resolved to a
+/// compile-time constant, or a small tree of runtime operations that
+/// codegen still needs to emit real instructions for.
+pub enum CheckedExpr {
+    Const(i64),
+    /// Load from a `mut` local's stack slot, `offset` bytes below the
+    /// frame pointer.
+    Local(usize),
+    Unary {
+        op: ast::UnaryOp,
+        operand: Box<CheckedExpr>,
+    },
+    Binary {
+        op: ast::BinOp,
+        lhs: Box<CheckedExpr>,
+        rhs: Box<CheckedExpr>,
+    },
+}
+
 pub enum CheckedStmt {
-    Syscall { args: [i64; 7] },
+    /// Store a value into a `mut` local's stack slot - used for both a
+    /// `let mut` initializer and a later `NAME = ...;` reassignment.
+    Store {
+        offset: usize,
+        value: CheckedExpr,
+    },
+    Syscall {
+        args: [CheckedExpr; 7],
+    },
 }
 
 pub fn check(program: &ast::Program) -> Result<CheckedProgram, Diagnostic> {
@@ -25,6 +55,15 @@ pub fn check(program: &ast::Program) -> Result<CheckedProgram, Diagnostic> {
         functions.push(check_function(function)?);
     }
     Ok(CheckedProgram { functions })
+}
+
+/// What a name currently in scope refers to.
+enum Symbol {
+    /// A plain `let` - fully known at compile time, substituted inline
+    /// wherever it's used. Takes up no stack space.
+    Const(i64),
+    /// A `let mut` - lives at a fixed offset below the frame pointer.
+    Local(usize),
 }
 
 fn check_function(function: &ast::FunctionDef) -> Result<CheckedFunction, Diagnostic> {

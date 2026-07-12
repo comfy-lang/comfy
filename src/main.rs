@@ -62,7 +62,7 @@ fn main() {
 
     match std::fs::write(&output_path, assembly) {
         Ok(_) => println!(
-            "Wrote {} (target: {}) <3",
+            "Wrote {} (target: {})",
             output_path.display(),
             backend.name()
         ),

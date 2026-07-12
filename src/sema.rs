@@ -2,12 +2,26 @@
 //! and produces a `CheckedProgram` for codegen to consume. This is where
 //! `let` constants get folded away entirely - codegen never sees them.
 
-use std::collections::HashMap;
-
 use crate::{
     ast,
     diag::{Diagnostic, Span},
 };
+use std::collections::HashMap;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Ty {
+    Int,
+    Bool,
+}
+
+impl std::fmt::Display for Ty {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Ty::Int => write!(f, "int"),
+            Ty::Bool => write!(f, "bool"),
+        }
+    }
+}
 
 pub struct CheckedProgram {
     pub functions: Vec<CheckedFunction>,
@@ -38,14 +52,31 @@ pub enum CheckedExpr {
         lhs: Box<CheckedExpr>,
         rhs: Box<CheckedExpr>,
     },
+    Compare {
+        op: ast::CompareOp,
+        lhs: Box<CheckedExpr>,
+        rhs: Box<CheckedExpr>,
+    },
     Syscall {
         args: Box<[CheckedExpr; 7]>,
     },
 }
 
 pub enum CheckedStmt {
-    Store { offset: usize, value: CheckedExpr },
+    Store {
+        offset: usize,
+        value: CheckedExpr,
+    },
     Expr(CheckedExpr),
+    If {
+        cond: CheckedExpr,
+        then_body: Vec<CheckedStmt>,
+        else_body: Option<Vec<CheckedStmt>>,
+    },
+    While {
+        cond: CheckedExpr,
+        body: Vec<CheckedStmt>,
+    },
 }
 
 pub fn check(program: &ast::Program) -> Result<CheckedProgram, Diagnostic> {
@@ -58,19 +89,32 @@ pub fn check(program: &ast::Program) -> Result<CheckedProgram, Diagnostic> {
 
 /// What a name currently in scope refers to.
 enum Symbol {
-    /// A plain `let` - fully known at compile time, substituted inline
-    /// wherever it's used. Takes up no stack space.
-    Const(i64),
-    /// A `let mut` - lives at a fixed offset below the frame pointer.
-    Local(usize),
+    Const(i64, Ty),
+    Local(usize, Ty),
+}
+
+struct Ctx {
+    symbols: HashMap<String, Symbol>,
+    frame_size: usize,
 }
 
 fn check_function(function: &ast::FunctionDef) -> Result<CheckedFunction, Diagnostic> {
-    let mut symbols: HashMap<String, Symbol> = HashMap::new();
-    let mut body = Vec::new();
-    let mut frame_size: usize = 0;
+    let mut ctx = Ctx {
+        symbols: HashMap::new(),
+        frame_size: 0,
+    };
+    let body = check_block(&function.body, &mut ctx)?;
+    Ok(CheckedFunction {
+        name: function.name.clone(),
+        frame_size: ctx.frame_size,
+        body,
+    })
+}
 
-    for stmt in &function.body {
+fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx) -> Result<Vec<CheckedStmt>, Diagnostic> {
+    let mut body = Vec::new();
+
+    for stmt in stmts {
         match stmt {
             ast::Stmt::Let {
                 name,
@@ -78,24 +122,24 @@ fn check_function(function: &ast::FunctionDef) -> Result<CheckedFunction, Diagno
                 value,
                 span,
             } => {
-                if symbols.contains_key(name) {
+                if ctx.symbols.contains_key(name) {
                     return Err(Diagnostic::error(
                         format!("'{}' is already declared", name),
                         *span,
                     ));
                 }
 
-                let value = lower_expr(value, &symbols)?;
+                let (value, ty) = lower_expr(value, &ctx.symbols)?;
 
                 if *mutable {
-                    frame_size += 4;
-                    let offset = frame_size;
-                    symbols.insert(name.clone(), Symbol::Local(offset));
+                    ctx.frame_size += 4;
+                    let offset = ctx.frame_size;
+                    ctx.symbols.insert(name.clone(), Symbol::Local(offset, ty));
                     body.push(CheckedStmt::Store { offset, value });
                 } else {
                     match value {
                         CheckedExpr::Const(v) => {
-                            symbols.insert(name.clone(), Symbol::Const(v));
+                            ctx.symbols.insert(name.clone(), Symbol::Const(v, ty));
                         }
                         _ => {
                             return Err(Diagnostic::error(
@@ -111,9 +155,9 @@ fn check_function(function: &ast::FunctionDef) -> Result<CheckedFunction, Diagno
             }
 
             ast::Stmt::Assign { name, value, span } => {
-                let offset = match symbols.get(name) {
-                    Some(Symbol::Local(offset)) => *offset,
-                    Some(Symbol::Const(_)) => {
+                let (offset, expected_ty) = match ctx.symbols.get(name) {
+                    Some(Symbol::Local(offset, ty)) => (*offset, *ty),
+                    Some(Symbol::Const(_, _)) => {
                         return Err(Diagnostic::error(
                             format!("cannot assign to '{}' - it is a constant, not 'mut'", name),
                             *span,
@@ -127,22 +171,82 @@ fn check_function(function: &ast::FunctionDef) -> Result<CheckedFunction, Diagno
                     }
                 };
 
-                let value = lower_expr(value, &symbols)?;
+                let (value, ty) = lower_expr(value, &ctx.symbols)?;
+                if ty != expected_ty {
+                    return Err(Diagnostic::error(
+                        format!(
+                            "cannot assign a '{}' to '{}', which is a '{}'",
+                            ty, name, expected_ty
+                        ),
+                        *span,
+                    ));
+                }
                 body.push(CheckedStmt::Store { offset, value });
             }
 
             ast::Stmt::Expr { value, .. } => {
-                let value = lower_expr(value, &symbols)?;
+                let (value, _ty) = lower_expr(value, &ctx.symbols)?;
                 body.push(CheckedStmt::Expr(value));
+            }
+
+            ast::Stmt::If {
+                cond,
+                then_body,
+                else_body,
+                ..
+            } => {
+                let cond_span = cond.span();
+                let (cond, cond_ty) = lower_expr(cond, &ctx.symbols)?;
+                if cond_ty != Ty::Bool {
+                    return Err(Diagnostic::error(
+                        format!(
+                            "'if' condition must be a bool, found '{}' - comfy doesn't implicitly convert integers to booleans; try a comparison like 'x != 0'",
+                            cond_ty
+                        ),
+                        cond_span,
+                    ));
+                }
+
+                let then_body = check_block(then_body, ctx)?;
+                let else_body = match else_body {
+                    Some(stmts) => Some(check_block(stmts, ctx)?),
+                    None => None,
+                };
+
+                body.push(CheckedStmt::If {
+                    cond,
+                    then_body,
+                    else_body,
+                });
+            }
+
+            ast::Stmt::While {
+                cond,
+                body: while_body,
+                ..
+            } => {
+                let cond_span = cond.span();
+                let (cond, cond_ty) = lower_expr(cond, &ctx.symbols)?;
+                if cond_ty != Ty::Bool {
+                    return Err(Diagnostic::error(
+                        format!(
+                            "'while' condition must be a bool, found '{}' - comfy doesn't implicitly convert integers to booleans; try a comparison like 'x != 0'",
+                            cond_ty
+                        ),
+                        cond_span,
+                    ));
+                }
+
+                let checked_body = check_block(while_body, ctx)?;
+                body.push(CheckedStmt::While {
+                    cond,
+                    body: checked_body,
+                });
             }
         }
     }
 
-    Ok(CheckedFunction {
-        name: function.name.clone(),
-        frame_size,
-        body,
-    })
+    Ok(body)
 }
 
 /// Builds a `Const` node, checking the value actually fits in a 32-bit
@@ -163,13 +267,15 @@ fn to_checked_const(value: i64, span: Span) -> Result<CheckedExpr, Diagnostic> {
 fn lower_expr(
     expr: &ast::Expr,
     symbols: &HashMap<String, Symbol>,
-) -> Result<CheckedExpr, Diagnostic> {
+) -> Result<(CheckedExpr, Ty), Diagnostic> {
     match expr {
-        ast::Expr::IntLit(value, span) => to_checked_const(*value, *span),
+        ast::Expr::IntLit(value, span) => Ok((to_checked_const(*value, *span)?, Ty::Int)),
+
+        ast::Expr::BoolLit(value, _) => Ok((CheckedExpr::Const(*value as i64), Ty::Bool)),
 
         ast::Expr::Ident(name, span) => match symbols.get(name) {
-            Some(Symbol::Const(value)) => Ok(CheckedExpr::Const(*value)),
-            Some(Symbol::Local(offset)) => Ok(CheckedExpr::Local(*offset)),
+            Some(Symbol::Const(value, ty)) => Ok((CheckedExpr::Const(*value), *ty)),
+            Some(Symbol::Local(offset, ty)) => Ok((CheckedExpr::Local(*offset), *ty)),
             None => Err(Diagnostic::error(
                 format!("undefined name '{}'", name),
                 *span,
@@ -177,35 +283,54 @@ fn lower_expr(
         },
 
         ast::Expr::Unary { op, operand, span } => {
-            let operand = lower_expr(operand, symbols)?;
+            let (operand, ty) = lower_expr(operand, symbols)?;
+            if ty != Ty::Int {
+                return Err(Diagnostic::error(
+                    format!("cannot negate a '{}' - '-' only applies to integers", ty),
+                    *span,
+                ));
+            }
             match (op, operand) {
-                (ast::UnaryOp::Neg, CheckedExpr::Const(value)) => value
-                    .checked_neg()
-                    .ok_or_else(|| Diagnostic::error("negation overflows a 64-bit integer", *span))
-                    .and_then(|v| to_checked_const(v, *span)),
-                (ast::UnaryOp::Neg, operand) => Ok(CheckedExpr::Unary {
-                    op: ast::UnaryOp::Neg,
-                    operand: Box::new(operand),
-                }),
+                (ast::UnaryOp::Neg, CheckedExpr::Const(value)) => {
+                    let folded = value.checked_neg().ok_or_else(|| {
+                        Diagnostic::error("negation overflows a 64-bit integer", *span)
+                    })?;
+                    Ok((to_checked_const(folded, *span)?, Ty::Int))
+                }
+                (ast::UnaryOp::Neg, operand) => Ok((
+                    CheckedExpr::Unary {
+                        op: ast::UnaryOp::Neg,
+                        operand: Box::new(operand),
+                    },
+                    Ty::Int,
+                )),
             }
         }
 
         ast::Expr::Binary { op, lhs, rhs, span } => {
-            let lhs = lower_expr(lhs, symbols)?;
-            let rhs = lower_expr(rhs, symbols)?;
+            let (lhs, lhs_ty) = lower_expr(lhs, symbols)?;
+            let (rhs, rhs_ty) = lower_expr(rhs, symbols)?;
+
+            if lhs_ty != Ty::Int || rhs_ty != Ty::Int {
+                return Err(Diagnostic::error(
+                    "arithmetic only works on integers",
+                    *span,
+                ));
+            }
 
             match (lhs, rhs) {
                 (CheckedExpr::Const(lhs_value), CheckedExpr::Const(rhs_value)) => {
-                    fold_const(*op, lhs_value, rhs_value, *span)
+                    Ok((fold_const(*op, lhs_value, rhs_value, *span)?, Ty::Int))
                 }
                 (lhs, rhs) => match op {
-                    ast::BinOp::Add | ast::BinOp::Sub | ast::BinOp::Mul => {
-                        Ok(CheckedExpr::Binary {
+                    ast::BinOp::Add | ast::BinOp::Sub | ast::BinOp::Mul => Ok((
+                        CheckedExpr::Binary {
                             op: *op,
                             lhs: Box::new(lhs),
                             rhs: Box::new(rhs),
-                        })
-                    }
+                        },
+                        Ty::Int,
+                    )),
                     ast::BinOp::Div | ast::BinOp::Rem => Err(Diagnostic::error(
                         "division and remainder are only supported between compile-time constants right now (arm32 has no hardware divide instruction)",
                         *span,
@@ -214,19 +339,61 @@ fn lower_expr(
             }
         }
 
+        ast::Expr::Compare { op, lhs, rhs, span } => {
+            let (lhs, lhs_ty) = lower_expr(lhs, symbols)?;
+            let (rhs, rhs_ty) = lower_expr(rhs, symbols)?;
+
+            if lhs_ty != Ty::Int || rhs_ty != Ty::Int {
+                return Err(Diagnostic::error(
+                    "comparisons only work on integers right now",
+                    *span,
+                ));
+            }
+
+            match (lhs, rhs) {
+                (CheckedExpr::Const(lhs_value), CheckedExpr::Const(rhs_value)) => {
+                    let result = match op {
+                        ast::CompareOp::Eq => lhs_value == rhs_value,
+                        ast::CompareOp::Ne => lhs_value != rhs_value,
+                        ast::CompareOp::Lt => lhs_value < rhs_value,
+                        ast::CompareOp::Le => lhs_value <= rhs_value,
+                        ast::CompareOp::Gt => lhs_value > rhs_value,
+                        ast::CompareOp::Ge => lhs_value >= rhs_value,
+                    };
+                    Ok((CheckedExpr::Const(result as i64), Ty::Bool))
+                }
+                (lhs, rhs) => Ok((
+                    CheckedExpr::Compare {
+                        op: *op,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
+                    Ty::Bool,
+                )),
+            }
+        }
+
         ast::Expr::Syscall { args, .. } => {
-            let lowered = [
-                lower_expr(&args[0], symbols)?,
-                lower_expr(&args[1], symbols)?,
-                lower_expr(&args[2], symbols)?,
-                lower_expr(&args[3], symbols)?,
-                lower_expr(&args[4], symbols)?,
-                lower_expr(&args[5], symbols)?,
-                lower_expr(&args[6], symbols)?,
-            ];
-            Ok(CheckedExpr::Syscall {
-                args: Box::new(lowered),
-            })
+            let mut lowered = Vec::with_capacity(7);
+            for arg in args.iter() {
+                let (value, ty) = lower_expr(arg, symbols)?;
+                if ty != Ty::Int {
+                    return Err(Diagnostic::error(
+                        format!("'$syscall' arguments must be integers, found a '{}'", ty),
+                        arg.span(),
+                    ));
+                }
+                lowered.push(value);
+            }
+            let lowered: [CheckedExpr; 7] = lowered
+                .try_into()
+                .unwrap_or_else(|_| unreachable!("syscall always has exactly 7 args"));
+            Ok((
+                CheckedExpr::Syscall {
+                    args: Box::new(lowered),
+                },
+                Ty::Int,
+            ))
         }
     }
 }

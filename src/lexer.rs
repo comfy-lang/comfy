@@ -7,9 +7,13 @@ pub enum TokenKind {
     Fn,
     Let,
     Mut,
+    If,
+    Else,
+    While,
+    True,
+    False,
     Ident(String),
     Int(i64),
-    /// A `$name` intrinsic, e.g. `$syscall`.
     Intrinsic(String),
 
     LParen,
@@ -19,6 +23,12 @@ pub enum TokenKind {
     Comma,
     Semicolon,
     Equals,
+    EqEq,
+    NotEq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
     Plus,
     Minus,
     Star,
@@ -59,7 +69,37 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             '}' => push(&mut tokens, TokenKind::RBrace, &mut i, 1),
             ',' => push(&mut tokens, TokenKind::Comma, &mut i, 1),
             ';' => push(&mut tokens, TokenKind::Semicolon, &mut i, 1),
-            '=' => push(&mut tokens, TokenKind::Equals, &mut i, 1),
+            '=' => {
+                if bytes.get(i + 1) == Some(&b'=') {
+                    push(&mut tokens, TokenKind::EqEq, &mut i, 2);
+                } else {
+                    push(&mut tokens, TokenKind::Equals, &mut i, 1);
+                }
+            }
+            '!' => {
+                if bytes.get(i + 1) == Some(&b'=') {
+                    push(&mut tokens, TokenKind::NotEq, &mut i, 2);
+                } else {
+                    return Err(Diagnostic::error(
+                        "unexpected character '!' (did you mean '!='?)",
+                        Span::new(i, i + 1),
+                    ));
+                }
+            }
+            '<' => {
+                if bytes.get(i + 1) == Some(&b'=') {
+                    push(&mut tokens, TokenKind::Le, &mut i, 2);
+                } else {
+                    push(&mut tokens, TokenKind::Lt, &mut i, 1);
+                }
+            }
+            '>' => {
+                if bytes.get(i + 1) == Some(&b'=') {
+                    push(&mut tokens, TokenKind::Ge, &mut i, 2);
+                } else {
+                    push(&mut tokens, TokenKind::Gt, &mut i, 1);
+                }
+            }
             '+' => push(&mut tokens, TokenKind::Plus, &mut i, 1),
             '-' => push(&mut tokens, TokenKind::Minus, &mut i, 1),
             '*' => push(&mut tokens, TokenKind::Star, &mut i, 1),
@@ -113,6 +153,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     "fn" => TokenKind::Fn,
                     "let" => TokenKind::Let,
                     "mut" => TokenKind::Mut,
+                    "if" => TokenKind::If,
+                    "else" => TokenKind::Else,
+                    "while" => TokenKind::While,
+                    "true" => TokenKind::True,
+                    "false" => TokenKind::False,
                     _ => TokenKind::Ident(text.to_string()),
                 };
                 tokens.push(Token {

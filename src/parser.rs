@@ -4,7 +4,7 @@
 //! declarations and `$syscall(...)` statements. Expressions are still just
 //! atoms (int literals or identifiers) - arithmetic comes in a later step.
 
-use crate::ast::{BinOp, Expr, FunctionDef, Program, Stmt, UnaryOp};
+use crate::ast::{BinOp, CompareOp, Expr, FunctionDef, Program, Stmt, UnaryOp};
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
 
@@ -52,14 +52,7 @@ impl<'a> Parser<'a> {
 
         self.expect(&TokenKind::LParen)?;
         self.expect(&TokenKind::RParen)?;
-        self.expect(&TokenKind::LBrace)?;
-
-        let mut body = Vec::new();
-        while !self.at(&TokenKind::RBrace) {
-            body.push(self.parse_stmt()?);
-        }
-        let end = self.span();
-        self.expect(&TokenKind::RBrace)?;
+        let (body, end) = self.parse_block()?;
 
         Ok(FunctionDef {
             name,
@@ -68,10 +61,23 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_block(&mut self) -> Result<(Vec<Stmt>, Span), Diagnostic> {
+        self.expect(&TokenKind::LBrace)?;
+        let mut stmts = Vec::new();
+        while !self.at(&TokenKind::RBrace) {
+            stmts.push(self.parse_stmt()?);
+        }
+        let end = self.span();
+        self.expect(&TokenKind::RBrace)?;
+        Ok((stmts, end))
+    }
+
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         match &self.current().kind {
             TokenKind::Let => self.parse_let_stmt(),
             TokenKind::Ident(_) => self.parse_assign_stmt(),
+            TokenKind::If => self.parse_if_stmt(),
+            TokenKind::While => self.parse_while_stmt(),
             _ => self.parse_expr_stmt(),
         }
     }
@@ -112,6 +118,48 @@ impl<'a> Parser<'a> {
         Ok(Stmt::Assign {
             name,
             value,
+            span: start.to(end),
+        })
+    }
+
+    fn parse_if_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.span();
+        self.expect(&TokenKind::If)?;
+        let cond = self.parse_expr()?;
+        let (then_body, mut end) = self.parse_block()?;
+
+        let else_body = if self.at(&TokenKind::Else) {
+            self.advance();
+            if self.at(&TokenKind::If) {
+                let nested = self.parse_if_stmt()?;
+                end = nested.span();
+                Some(vec![nested])
+            } else {
+                let (body, block_end) = self.parse_block()?;
+                end = block_end;
+                Some(body)
+            }
+        } else {
+            None
+        };
+
+        Ok(Stmt::If {
+            cond,
+            then_body,
+            else_body,
+            span: start.to(end),
+        })
+    }
+
+    fn parse_while_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.span();
+        self.expect(&TokenKind::While)?;
+        let cond = self.parse_expr()?;
+        let (body, end) = self.parse_block()?;
+
+        Ok(Stmt::While {
+            cond,
+            body,
             span: start.to(end),
         })
     }
@@ -173,7 +221,33 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, Diagnostic> {
-        self.parse_binary(0)
+        let lhs = self.parse_binary(0)?;
+
+        if let Some(op) = self.peek_compare_op() {
+            self.advance();
+            let rhs = self.parse_binary(0)?;
+            let span = lhs.span().to(rhs.span());
+            return Ok(Expr::Compare {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            });
+        }
+
+        Ok(lhs)
+    }
+
+    fn peek_compare_op(&self) -> Option<CompareOp> {
+        match self.current().kind {
+            TokenKind::EqEq => Some(CompareOp::Eq),
+            TokenKind::NotEq => Some(CompareOp::Ne),
+            TokenKind::Lt => Some(CompareOp::Lt),
+            TokenKind::Le => Some(CompareOp::Le),
+            TokenKind::Gt => Some(CompareOp::Gt),
+            TokenKind::Ge => Some(CompareOp::Ge),
+            _ => None,
+        }
     }
 
     /// Precedence climbing: consumes a unary term, then repeatedly folds in
@@ -252,6 +326,14 @@ impl<'a> Parser<'a> {
                 let name = name.clone();
                 self.advance();
                 self.parse_syscall_args(name, span)
+            }
+            TokenKind::True => {
+                self.advance();
+                Ok(Expr::BoolLit(true, span))
+            }
+            TokenKind::False => {
+                self.advance();
+                Ok(Expr::BoolLit(false, span))
             }
             other => Err(Diagnostic::error(
                 format!("expected an expression, found {:?}", other),

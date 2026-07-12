@@ -2,7 +2,7 @@
 <img src="./assets/comfylang.png" alt="comfy logo">
 </center>
 
-**comfylang** is a low-level, statically-typed, Rust/C-flavored systems language, with its compiler (`comfyc`) currently compiling straight to ARM32 assembly.
+**comfylang** is a low-level, statically-typed systems language, with the `comfy` compiler currently compiling straight to ARM32 assembly.
 
 > **Status: full rewrite in progress.** The compiler is being rebuilt from scratch with a proper architecture (spanned lexer, real diagnostics, a type checker, an IR, and a pluggable backend trait) instead of the original direct AST-walking interpreter-style code generator. The language surface is intentionally minimal right now and will grow step by step. See "Roadmap" below.
 
@@ -28,20 +28,39 @@ util/run.sh examples/exit_code.cfy
 
 ## Current language surface
 
-Right now the compiler understands exactly one thing: a single `fn main()` containing calls to the one compiler intrinsic, `$syscall`:
+A single `fn main()` body, with variables, arithmetic, comparisons, `if`/`else`/`while`, and syscalls:
 
 ```rust
-// examples/exit_code.cfy
+// examples/logic/if_while.cfy
 fn main() {
-    $syscall(1, 42, 0, 0, 0, 0, 0);
+    let mut i = 0;
+    let mut sum = 0;
+
+    while i < 10 {
+        sum = sum + i;
+        i = i + 1;
+    }
+
+    if sum == 45 {
+        $syscall(1, 1, 0, 0, 0, 0, 0); // exit 1: correct
+    } else {
+        $syscall(1, 0, 0, 0, 0, 0, 0); // exit 0: wrong
+    }
 }
 ```
 
-`$syscall(nr, a0, a1, a2, a3, a4, a5)` maps directly onto the Linux ARM EABI syscall convention (syscall number in `r7`, up to 6 arguments in `r0`-`r5`). Named wrappers like `write`/`read`/`exit` existed in the previous implementation and will come back as ordinary standard-library functions built on top of this single intrinsic, once comfylang has real functions — rather than being hardcoded into the compiler one by one as before.
+- `let NAME = expr;` is a compile-time constant, folded away entirely - it costs nothing at runtime, and must be provable at compile time.
+- `let mut NAME = expr;` is a real, stack-allocated local that can be reassigned with `NAME = expr;`.
+- Arithmetic (`+ - * / %`, unary `-`) is constant-folded when possible; runtime arithmetic falls back to a simple stack-machine codegen. Runtime (non-constant) `/` and `%` aren't supported yet - arm32 has no hardware divide instruction and the compiler is `-nostdlib`, so it can't call into libgcc for a software fallback.
+- Comparisons (`== != < <= > >=`) produce a real `bool`, and can't be chained (`a < b < c` doesn't parse. `if`/`while` conditions must be `bool`; comfy does not implicitly convert integers to booleans.
+- `$syscall(nr, a0, a1, a2, a3, a4, a5)` is the sole compiler intrinsic, usable as a statement or an expression (its return value, from `r0`, can be captured). It maps directly onto the Linux ARM EABI syscall convention. Named wrappers like `write`/`read`/`exit` will come back as ordinary standard-library functions built on top of this, once comfylang has real functions.
+
+More examples in [`examples/`](./examples).
+
 
 ## Design goals
 
-- Rust-flavored syntax, C-level control: manual memory management, structs, pointers, full type safety.
+- Manual memory management, structs, pointers, full type safety.
 - Turing-complete, self-hosted: the compiler will eventually be rewritten in comfylang itself.
 - Hand-written backend, ARM32 first, with x86 and others planned via a `Backend` trait.
 - Compile-time optimizations (constant folding, dead-code elimination, and more) once an IR exists.
@@ -52,10 +71,11 @@ fn main() {
 Planned, in rough order:
 
 1. ~~Lexer/parser/codegen skeleton with real diagnostics~~ ✅
-2. Integer types + variables
-3. Expressions (arithmetic, comparison, logical) with precedence
-4. Control flow (`if`/`else`, `while`)
-5. User-defined functions, calling convention, recursion
-6. Pointers, arrays, `struct`s
-7. IR + optimization passes
-8. Additional backends (x86_64, ...), standard library, self-hosting prep
+2. ~~Integer types + variables (`let`/`let mut`, assignment)~~ ✅
+3. ~~Arithmetic + comparison expressions with precedence~~ ✅
+4. ~~Control flow (`if`/`else`, `while`)~~ ✅
+5. Logical operators (`&&`, `||`, `!`) with short-circuit evaluation
+6. User-defined functions, calling convention, recursion
+7. Pointers, arrays, `struct`s
+8. IR + optimization passes
+9. Additional backends (x86_64, ...), standard library, self-hosting prep

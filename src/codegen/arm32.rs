@@ -60,18 +60,9 @@ fn emit_stmt(out: &mut String, stmt: &CheckedStmt) {
             out.push_str(&format!("\tstr r0, [fp, #-{}]\n", offset));
         }
 
-        CheckedStmt::Syscall { args } => {
-            for arg in args {
-                emit_expr(out, arg);
-            }
-            out.push_str("\tpop {r5}\n");
-            out.push_str("\tpop {r4}\n");
-            out.push_str("\tpop {r3}\n");
-            out.push_str("\tpop {r2}\n");
-            out.push_str("\tpop {r1}\n");
-            out.push_str("\tpop {r0}\n");
-            out.push_str("\tpop {r7}\n");
-            out.push_str("\tsvc #0\n");
+        CheckedStmt::Expr(value) => {
+            emit_expr(out, value);
+            out.push_str("\tpop {r0}\n"); // discard the result, we only wanted the side effect
         }
     }
 }
@@ -112,6 +103,21 @@ fn emit_expr(out: &mut String, expr: &CheckedExpr) {
                 }
             }
             out.push_str("\tpush {r0}\n");
+        }
+
+        CheckedExpr::Syscall { args } => {
+            for arg in args.iter() {
+                emit_expr(out, arg);
+            }
+            out.push_str("\tpop {r5}\n");
+            out.push_str("\tpop {r4}\n");
+            out.push_str("\tpop {r3}\n");
+            out.push_str("\tpop {r2}\n");
+            out.push_str("\tpop {r1}\n");
+            out.push_str("\tpop {r0}\n");
+            out.push_str("\tpop {r7}\n");
+            out.push_str("\tsvc #0\n");
+            out.push_str("\tpush {r0}\n"); // leave the syscall's return value on the stack
         }
     }
 }

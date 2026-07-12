@@ -14,7 +14,7 @@ shift || true
 
 case "$(uname -m)" in
   arm|armv6l|armv7l)
-    exec "$BIN" "$@"
+    "$BIN" "$@" && CODE=0 || CODE=$?
     ;;
   *)
     QEMU_BIN="${QEMU_ARM:-qemu-arm}"
@@ -22,6 +22,9 @@ case "$(uname -m)" in
       echo "error: $QEMU_BIN not found. Enter the dev shell first: nix develop" >&2
       exit 1
     fi
-    exec "$QEMU_BIN" "$BIN" "$@"
+    "$QEMU_BIN" "$BIN" "$@" && CODE=0 || CODE=$?
     ;;
 esac
+
+echo "Program exited with code $CODE"
+exit "$CODE"

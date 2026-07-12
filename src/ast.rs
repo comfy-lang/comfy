@@ -46,9 +46,19 @@ impl Expr {
 }
 
 pub enum Stmt {
-    /// `let NAME = <expr>;` - a compile-time constant. Resolved away
-    /// entirely during semantic analysis; never reaches codegen.
+    /// `let NAME = <expr>;` (constant) or `let mut NAME = <expr>;` (a real,
+    /// stack-allocated, runtime local). Plain `let` is resolved away
+    /// entirely during semantic analysis; `let mut` gets an actual stack
+    /// slot and reaches codegen.
     Let {
+        name: String,
+        mutable: bool,
+        value: Expr,
+        span: Span,
+    },
+
+    /// `NAME = <expr>;` - reassigns an existing `mut` binding.
+    Assign {
         name: String,
         value: Expr,
         span: Span,

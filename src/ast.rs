@@ -69,15 +69,21 @@ pub enum Stmt {
         span: Span,
     },
 
-    /// A bare expression used as a statement, e.g. `$syscall(...);` where
-    /// the result is discarded. Anything that isn't `let` or `NAME = ...`
-    /// ends up here.
-    Expr { value: Expr, span: Span },
+    Expr {
+        value: Expr,
+        /// Kept for future diagnostics (e.g. warning on a useless bare
+        /// expression statement); not read yet.
+        #[allow(dead_code)]
+        span: Span,
+    },
 }
 
 pub struct FunctionDef {
     pub name: String,
     pub body: Vec<Stmt>,
+    /// Kept for future diagnostics (e.g. pointing at the whole function
+    /// signature); not read yet.
+    #[allow(dead_code)]
     pub span: Span,
 }
 

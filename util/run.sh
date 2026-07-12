@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-OUTPUT="$(cargo run --quiet -- "$1")"
+OUTPUT="$(RUSTFLAGS="-Awarnings" cargo run --quiet -- "$1")"
 echo "$OUTPUT"
 
 OUT_S="$(echo "$OUTPUT" | grep -oP '(?<=Wrote )\S+\.s')"

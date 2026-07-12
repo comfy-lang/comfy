@@ -1,0 +1,33 @@
+// examples/logic/short_circuit.cfy
+//
+// Proves && and || actually short-circuit (skip evaluating the right side)
+// rather than just computing the right answer. `loops_forever()` never
+// returns, so if either operator incorrectly evaluates its right side here,
+// the program hangs instead of exiting - run this with a timeout.
+
+fn loops_forever() -> bool {
+    while true {
+        // if this ever runs, the program never terminates
+    }
+    return true;
+}
+
+fn main() {
+    let a = false;
+
+    // '&&' must short-circuit: `a` is false, so `loops_forever()` must
+    // never be called.
+    if a && loops_forever() {
+        $syscall(1, 99, 0, 0, 0, 0, 0); // should never run
+    }
+
+    let b = true;
+
+    // '||' must short-circuit too: `b` is true, so `loops_forever()`
+    // must never be called here either.
+    if b || loops_forever() {
+        $syscall(1, 7, 0, 0, 0, 0, 0); // exit 7: correctly short-circuited
+    }
+
+    $syscall(1, 0, 0, 0, 0, 0, 0); // should not be reached
+}

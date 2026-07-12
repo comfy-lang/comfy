@@ -199,6 +199,7 @@ impl Emitter {
                 self.out.push_str("\tpop {r0}\n");
                 match op {
                     ast::UnaryOp::Neg => self.out.push_str("\trsb r0, r0, #0\n"),
+                    ast::UnaryOp::Not => self.out.push_str("\teor r0, r0, #1\n"),
                 }
                 self.out.push_str("\tpush {r0}\n");
             }
@@ -237,6 +238,47 @@ impl Emitter {
                 self.out.push_str(&format!("\t{} r0, #1\n", cond));
                 self.out.push_str("\tpush {r0}\n");
             }
+
+            CheckedExpr::Logical { op, lhs, rhs } => match op {
+                ast::LogicalOp::And => {
+                    let false_label = self.new_label("and_false");
+                    let end_label = self.new_label("and_end");
+
+                    self.emit_expr(lhs);
+                    self.out.push_str("\tpop {r0}\n");
+                    self.out.push_str("\tcmp r0, #0\n");
+                    self.out.push_str(&format!("\tbeq {}\n", false_label));
+
+                    self.emit_expr(rhs);
+                    self.out.push_str("\tpop {r0}\n");
+                    self.out.push_str(&format!("\tb {}\n", end_label));
+
+                    self.out.push_str(&format!("{}:\n", false_label));
+                    self.out.push_str("\tmov r0, #0\n");
+
+                    self.out.push_str(&format!("{}:\n", end_label));
+                    self.out.push_str("\tpush {r0}\n");
+                }
+                ast::LogicalOp::Or => {
+                    let true_label = self.new_label("or_true");
+                    let end_label = self.new_label("or_end");
+
+                    self.emit_expr(lhs);
+                    self.out.push_str("\tpop {r0}\n");
+                    self.out.push_str("\tcmp r0, #0\n");
+                    self.out.push_str(&format!("\tbne {}\n", true_label));
+
+                    self.emit_expr(rhs);
+                    self.out.push_str("\tpop {r0}\n");
+                    self.out.push_str(&format!("\tb {}\n", end_label));
+
+                    self.out.push_str(&format!("{}:\n", true_label));
+                    self.out.push_str("\tmov r0, #1\n");
+
+                    self.out.push_str(&format!("{}:\n", end_label));
+                    self.out.push_str("\tpush {r0}\n");
+                }
+            },
 
             CheckedExpr::Syscall { args } => {
                 for arg in args.iter() {

@@ -1,10 +1,4 @@
-//! Recursive-descent parser.
-//!
-//! Grammar so far: a single `fn main() { ... }` containing `let` constant
-//! declarations and `$syscall(...)` statements. Expressions are still just
-//! atoms (int literals or identifiers) - arithmetic comes in a later step.
-
-use crate::ast::{BinOp, CompareOp, Expr, FunctionDef, Program, Stmt, UnaryOp};
+use crate::ast::{BinOp, CompareOp, Expr, FunctionDef, Param, Program, Stmt, TypeName, UnaryOp};
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
 
@@ -18,6 +12,10 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    fn peek_next(&self) -> &TokenKind {
+        &self.tokens[self.pos + 1].kind
+    }
+
     fn parse_program(&mut self) -> Result<Program, Diagnostic> {
         let mut functions = Vec::new();
 
@@ -40,25 +38,54 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Fn)?;
 
         let name = self.expect_ident()?;
-        if name != "main" {
-            return Err(Diagnostic::error(
-                format!(
-                    "function '{}' is not supported yet - only a single `fn main()` is allowed for now",
-                    name
-                ),
-                start,
-            ));
-        }
 
         self.expect(&TokenKind::LParen)?;
+        let mut params = Vec::new();
+        while !self.at(&TokenKind::RParen) {
+            params.push(self.parse_param()?);
+            if self.at(&TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
         self.expect(&TokenKind::RParen)?;
+
+        let return_type = if self.at(&TokenKind::Arrow) {
+            self.advance();
+            Some(self.parse_type_name()?)
+        } else {
+            None
+        };
+
         let (body, end) = self.parse_block()?;
 
         Ok(FunctionDef {
             name,
+            params,
+            return_type,
             body,
             span: start.to(end),
         })
+    }
+
+    fn parse_param(&mut self) -> Result<Param, Diagnostic> {
+        let start = self.span();
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Colon)?;
+        let ty = self.parse_type_name()?;
+        let end = ty.span;
+        Ok(Param {
+            name,
+            ty,
+            span: start.to(end),
+        })
+    }
+
+    fn parse_type_name(&mut self) -> Result<TypeName, Diagnostic> {
+        let span = self.span();
+        let name = self.expect_ident()?;
+        Ok(TypeName { name, span })
     }
 
     fn parse_block(&mut self) -> Result<(Vec<Stmt>, Span), Diagnostic> {
@@ -75,9 +102,12 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         match &self.current().kind {
             TokenKind::Let => self.parse_let_stmt(),
-            TokenKind::Ident(_) => self.parse_assign_stmt(),
+            TokenKind::Ident(_) if self.peek_next() == &TokenKind::Equals => {
+                self.parse_assign_stmt()
+            }
             TokenKind::If => self.parse_if_stmt(),
             TokenKind::While => self.parse_while_stmt(),
+            TokenKind::Return => self.parse_return_stmt(),
             _ => self.parse_expr_stmt(),
         }
     }
@@ -160,6 +190,25 @@ impl<'a> Parser<'a> {
         Ok(Stmt::While {
             cond,
             body,
+            span: start.to(end),
+        })
+    }
+
+    fn parse_return_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.span();
+        self.expect(&TokenKind::Return)?;
+
+        let value = if self.at(&TokenKind::Semicolon) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+
+        let end = self.span();
+        self.expect(&TokenKind::Semicolon)?;
+
+        Ok(Stmt::Return {
+            value,
             span: start.to(end),
         })
     }
@@ -314,7 +363,11 @@ impl<'a> Parser<'a> {
             TokenKind::Ident(name) => {
                 let name = name.clone();
                 self.advance();
-                Ok(Expr::Ident(name, span))
+                if self.at(&TokenKind::LParen) {
+                    self.parse_call_args(name, span)
+                } else {
+                    Ok(Expr::Ident(name, span))
+                }
             }
             TokenKind::LParen => {
                 self.advance();
@@ -340,6 +393,29 @@ impl<'a> Parser<'a> {
                 span,
             )),
         }
+    }
+
+    fn parse_call_args(&mut self, name: String, start: Span) -> Result<Expr, Diagnostic> {
+        self.expect(&TokenKind::LParen)?;
+
+        let mut args = Vec::new();
+        while !self.at(&TokenKind::RParen) {
+            args.push(self.parse_expr()?);
+            if self.at(&TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let end = self.span();
+        self.expect(&TokenKind::RParen)?;
+
+        Ok(Expr::Call {
+            name,
+            args,
+            span: start.to(end),
+        })
     }
 
     fn current(&self) -> &Token {

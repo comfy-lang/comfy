@@ -2,16 +2,18 @@
 //! and produces a `CheckedProgram` for codegen to consume. This is where
 //! `let` constants get folded away entirely - codegen never sees them.
 
+use std::collections::HashMap;
+
 use crate::{
     ast,
     diag::{Diagnostic, Span},
 };
-use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Ty {
     Int,
     Bool,
+    Unit,
 }
 
 impl std::fmt::Display for Ty {
@@ -19,7 +21,19 @@ impl std::fmt::Display for Ty {
         match self {
             Ty::Int => write!(f, "int"),
             Ty::Bool => write!(f, "bool"),
+            Ty::Unit => write!(f, "()"),
         }
+    }
+}
+
+fn resolve_type(ty: &ast::TypeName) -> Result<Ty, Diagnostic> {
+    match ty.name.as_str() {
+        "int" => Ok(Ty::Int),
+        "bool" => Ok(Ty::Bool),
+        other => Err(Diagnostic::error(
+            format!("unknown type '{}'", other),
+            ty.span,
+        )),
     }
 }
 
@@ -29,19 +43,15 @@ pub struct CheckedProgram {
 
 pub struct CheckedFunction {
     pub name: String,
-    /// Total bytes to reserve on the stack for this function's `mut`
-    /// locals (each currently a 4-byte word, matching an ARM32 register).
+    /// Stack slot offset for each parameter, in declared order - the
+    /// prologue stores incoming `r0..r3` into these.
+    pub param_offsets: Vec<usize>,
     pub frame_size: usize,
     pub body: Vec<CheckedStmt>,
 }
 
-/// An expression after semantic analysis: either fully resolved to a
-/// compile-time constant, or a small tree of runtime operations that
-/// codegen still needs to emit real instructions for.
 pub enum CheckedExpr {
     Const(i64),
-    /// Load from a `mut` local's stack slot, `offset` bytes below the
-    /// frame pointer.
     Local(usize),
     Unary {
         op: ast::UnaryOp,
@@ -60,6 +70,10 @@ pub enum CheckedExpr {
     Syscall {
         args: Box<[CheckedExpr; 7]>,
     },
+    Call {
+        name: String,
+        args: Vec<CheckedExpr>,
+    },
 }
 
 pub enum CheckedStmt {
@@ -77,41 +91,140 @@ pub enum CheckedStmt {
         cond: CheckedExpr,
         body: Vec<CheckedStmt>,
     },
+    Return(Option<CheckedExpr>),
 }
 
 pub fn check(program: &ast::Program) -> Result<CheckedProgram, Diagnostic> {
+    let mut sigs: HashMap<String, FunctionSig> = HashMap::new();
+
+    for function in &program.functions {
+        if sigs.contains_key(&function.name) {
+            return Err(Diagnostic::error(
+                format!("function '{}' is already defined", function.name),
+                function.span,
+            ));
+        }
+
+        if function.name == "main"
+            && (!function.params.is_empty() || function.return_type.is_some())
+        {
+            return Err(Diagnostic::error(
+                "'fn main()' cannot take parameters or return a value yet",
+                function.span,
+            ));
+        }
+
+        if function.params.len() > 4 {
+            return Err(Diagnostic::error(
+                format!(
+                    "function '{}' has {} parameters, but only up to 4 are supported right now",
+                    function.name,
+                    function.params.len()
+                ),
+                function.span,
+            ));
+        }
+
+        let mut params = Vec::with_capacity(function.params.len());
+        for param in &function.params {
+            params.push(resolve_type(&param.ty)?);
+        }
+
+        let return_type = match &function.return_type {
+            Some(ty) => resolve_type(ty)?,
+            None => Ty::Unit,
+        };
+
+        sigs.insert(
+            function.name.clone(),
+            FunctionSig {
+                params,
+                return_type,
+            },
+        );
+    }
+
+    if !sigs.contains_key("main") {
+        return Err(Diagnostic::error(
+            "expected a 'fn main()' function",
+            program.functions[0].span,
+        ));
+    }
+
     let mut functions = Vec::new();
     for function in &program.functions {
-        functions.push(check_function(function)?);
+        functions.push(check_function(function, &sigs)?);
     }
+
     Ok(CheckedProgram { functions })
 }
 
-/// What a name currently in scope refers to.
+struct FunctionSig {
+    params: Vec<Ty>,
+    return_type: Ty,
+}
+
 enum Symbol {
     Const(i64, Ty),
     Local(usize, Ty),
 }
 
-struct Ctx {
+struct Ctx<'a> {
     symbols: HashMap<String, Symbol>,
     frame_size: usize,
+    sigs: &'a HashMap<String, FunctionSig>,
+    return_type: Ty,
+    is_entry: bool,
 }
 
-fn check_function(function: &ast::FunctionDef) -> Result<CheckedFunction, Diagnostic> {
+fn check_function(
+    function: &ast::FunctionDef,
+    sigs: &HashMap<String, FunctionSig>,
+) -> Result<CheckedFunction, Diagnostic> {
+    let sig = &sigs[&function.name];
+
     let mut ctx = Ctx {
         symbols: HashMap::new(),
         frame_size: 0,
+        sigs,
+        return_type: sig.return_type,
+        is_entry: function.name == "main",
     };
+
+    let mut param_offsets = Vec::with_capacity(function.params.len());
+    for (param, ty) in function.params.iter().zip(&sig.params) {
+        ctx.frame_size += 4;
+        let offset = ctx.frame_size;
+        ctx.symbols
+            .insert(param.name.clone(), Symbol::Local(offset, *ty));
+        param_offsets.push(offset);
+    }
+
     let body = check_block(&function.body, &mut ctx)?;
+
+    if ctx.return_type != Ty::Unit && !ends_with_return(&function.body) {
+        return Err(Diagnostic::error(
+            format!(
+                "function '{}' must end with a 'return' statement (it returns '{}')",
+                function.name, ctx.return_type
+            ),
+            function.span,
+        ));
+    }
+
     Ok(CheckedFunction {
         name: function.name.clone(),
+        param_offsets,
         frame_size: ctx.frame_size,
         body,
     })
 }
 
-fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx) -> Result<Vec<CheckedStmt>, Diagnostic> {
+fn ends_with_return(stmts: &[ast::Stmt]) -> bool {
+    matches!(stmts.last(), Some(ast::Stmt::Return { .. }))
+}
+
+fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx<'_>) -> Result<Vec<CheckedStmt>, Diagnostic> {
     let mut body = Vec::new();
 
     for stmt in stmts {
@@ -129,7 +242,13 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx) -> Result<Vec<CheckedStmt>, D
                     ));
                 }
 
-                let (value, ty) = lower_expr(value, &ctx.symbols)?;
+                let (value, ty) = lower_expr(value, ctx)?;
+                if ty == Ty::Unit {
+                    return Err(Diagnostic::error(
+                        format!("cannot bind '{}' to a value of type '()'", name),
+                        *span,
+                    ));
+                }
 
                 if *mutable {
                     ctx.frame_size += 4;
@@ -171,7 +290,7 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx) -> Result<Vec<CheckedStmt>, D
                     }
                 };
 
-                let (value, ty) = lower_expr(value, &ctx.symbols)?;
+                let (value, ty) = lower_expr(value, ctx)?;
                 if ty != expected_ty {
                     return Err(Diagnostic::error(
                         format!(
@@ -185,7 +304,7 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx) -> Result<Vec<CheckedStmt>, D
             }
 
             ast::Stmt::Expr { value, .. } => {
-                let (value, _ty) = lower_expr(value, &ctx.symbols)?;
+                let (value, _ty) = lower_expr(value, ctx)?;
                 body.push(CheckedStmt::Expr(value));
             }
 
@@ -196,7 +315,7 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx) -> Result<Vec<CheckedStmt>, D
                 ..
             } => {
                 let cond_span = cond.span();
-                let (cond, cond_ty) = lower_expr(cond, &ctx.symbols)?;
+                let (cond, cond_ty) = lower_expr(cond, ctx)?;
                 if cond_ty != Ty::Bool {
                     return Err(Diagnostic::error(
                         format!(
@@ -226,7 +345,7 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx) -> Result<Vec<CheckedStmt>, D
                 ..
             } => {
                 let cond_span = cond.span();
-                let (cond, cond_ty) = lower_expr(cond, &ctx.symbols)?;
+                let (cond, cond_ty) = lower_expr(cond, ctx)?;
                 if cond_ty != Ty::Bool {
                     return Err(Diagnostic::error(
                         format!(
@@ -243,37 +362,55 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx) -> Result<Vec<CheckedStmt>, D
                     body: checked_body,
                 });
             }
+
+            ast::Stmt::Return { value, span } => {
+                if ctx.is_entry {
+                    return Err(Diagnostic::error(
+                        "'return' cannot be used inside 'fn main()' - exit the program via '$syscall' instead",
+                        *span,
+                    ));
+                }
+                match value {
+                    None => {
+                        if ctx.return_type != Ty::Unit {
+                            return Err(Diagnostic::error(
+                                format!(
+                                    "expected a 'return' value of type '{}', found a bare 'return'",
+                                    ctx.return_type
+                                ),
+                                *span,
+                            ));
+                        }
+                        body.push(CheckedStmt::Return(None));
+                    }
+                    Some(expr) => {
+                        let (value, ty) = lower_expr(expr, ctx)?;
+                        if ty != ctx.return_type {
+                            return Err(Diagnostic::error(
+                                format!(
+                                    "'return' value has type '{}', expected '{}'",
+                                    ty, ctx.return_type
+                                ),
+                                expr.span(),
+                            ));
+                        }
+                        body.push(CheckedStmt::Return(Some(value)));
+                    }
+                }
+            }
         }
     }
 
     Ok(body)
 }
 
-/// Builds a `Const` node, checking the value actually fits in a 32-bit
-/// register - arm32 has no 64-bit arithmetic, so anything that doesn't
-/// fit is a compile error rather than a silent truncation at codegen time.
-fn to_checked_const(value: i64, span: Span) -> Result<CheckedExpr, Diagnostic> {
-    i32::try_from(value).map(|_| CheckedExpr::Const(value)).map_err(|_| {
-        Diagnostic::error(
-            format!(
-                "value {} does not fit in a 32-bit register (arm32 only supports 32-bit integers)",
-                value
-            ),
-            span,
-        )
-    })
-}
-
-fn lower_expr(
-    expr: &ast::Expr,
-    symbols: &HashMap<String, Symbol>,
-) -> Result<(CheckedExpr, Ty), Diagnostic> {
+fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diagnostic> {
     match expr {
         ast::Expr::IntLit(value, span) => Ok((to_checked_const(*value, *span)?, Ty::Int)),
 
         ast::Expr::BoolLit(value, _) => Ok((CheckedExpr::Const(*value as i64), Ty::Bool)),
 
-        ast::Expr::Ident(name, span) => match symbols.get(name) {
+        ast::Expr::Ident(name, span) => match ctx.symbols.get(name) {
             Some(Symbol::Const(value, ty)) => Ok((CheckedExpr::Const(*value), *ty)),
             Some(Symbol::Local(offset, ty)) => Ok((CheckedExpr::Local(*offset), *ty)),
             None => Err(Diagnostic::error(
@@ -283,7 +420,7 @@ fn lower_expr(
         },
 
         ast::Expr::Unary { op, operand, span } => {
-            let (operand, ty) = lower_expr(operand, symbols)?;
+            let (operand, ty) = lower_expr(operand, ctx)?;
             if ty != Ty::Int {
                 return Err(Diagnostic::error(
                     format!("cannot negate a '{}' - '-' only applies to integers", ty),
@@ -308,8 +445,8 @@ fn lower_expr(
         }
 
         ast::Expr::Binary { op, lhs, rhs, span } => {
-            let (lhs, lhs_ty) = lower_expr(lhs, symbols)?;
-            let (rhs, rhs_ty) = lower_expr(rhs, symbols)?;
+            let (lhs, lhs_ty) = lower_expr(lhs, ctx)?;
+            let (rhs, rhs_ty) = lower_expr(rhs, ctx)?;
 
             if lhs_ty != Ty::Int || rhs_ty != Ty::Int {
                 return Err(Diagnostic::error(
@@ -340,8 +477,8 @@ fn lower_expr(
         }
 
         ast::Expr::Compare { op, lhs, rhs, span } => {
-            let (lhs, lhs_ty) = lower_expr(lhs, symbols)?;
-            let (rhs, rhs_ty) = lower_expr(rhs, symbols)?;
+            let (lhs, lhs_ty) = lower_expr(lhs, ctx)?;
+            let (rhs, rhs_ty) = lower_expr(rhs, ctx)?;
 
             if lhs_ty != Ty::Int || rhs_ty != Ty::Int {
                 return Err(Diagnostic::error(
@@ -376,7 +513,7 @@ fn lower_expr(
         ast::Expr::Syscall { args, .. } => {
             let mut lowered = Vec::with_capacity(7);
             for arg in args.iter() {
-                let (value, ty) = lower_expr(arg, symbols)?;
+                let (value, ty) = lower_expr(arg, ctx)?;
                 if ty != Ty::Int {
                     return Err(Diagnostic::error(
                         format!("'$syscall' arguments must be integers, found a '{}'", ty),
@@ -395,7 +532,60 @@ fn lower_expr(
                 Ty::Int,
             ))
         }
+
+        ast::Expr::Call { name, args, span } => {
+            let sig = ctx.sigs.get(name).ok_or_else(|| {
+                Diagnostic::error(format!("undefined function '{}'", name), *span)
+            })?;
+
+            if args.len() != sig.params.len() {
+                return Err(Diagnostic::error(
+                    format!(
+                        "function '{}' expects {} argument(s), found {}",
+                        name,
+                        sig.params.len(),
+                        args.len()
+                    ),
+                    *span,
+                ));
+            }
+
+            let mut lowered = Vec::with_capacity(args.len());
+            for (arg, expected_ty) in args.iter().zip(&sig.params) {
+                let (value, ty) = lower_expr(arg, ctx)?;
+                if ty != *expected_ty {
+                    return Err(Diagnostic::error(
+                        format!(
+                            "argument to '{}' has type '{}', expected '{}'",
+                            name, ty, expected_ty
+                        ),
+                        arg.span(),
+                    ));
+                }
+                lowered.push(value);
+            }
+
+            Ok((
+                CheckedExpr::Call {
+                    name: name.clone(),
+                    args: lowered,
+                },
+                sig.return_type,
+            ))
+        }
     }
+}
+
+fn to_checked_const(value: i64, span: Span) -> Result<CheckedExpr, Diagnostic> {
+    i32::try_from(value).map(|_| CheckedExpr::Const(value)).map_err(|_| {
+        Diagnostic::error(
+            format!(
+                "value {} does not fit in a 32-bit register (arm32 only supports 32-bit integers)",
+                value
+            ),
+            span,
+        )
+    })
 }
 
 fn fold_const(op: ast::BinOp, lhs: i64, rhs: i64, span: Span) -> Result<CheckedExpr, Diagnostic> {

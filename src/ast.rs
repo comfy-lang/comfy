@@ -135,6 +135,9 @@ impl Stmt {
 pub struct Param {
     pub name: String,
     pub ty: TypeName,
+    /// Kept for future diagnostics (e.g. pointing at just this parameter
+    /// in a type-mismatch error); not read yet.
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -143,7 +146,6 @@ pub struct FunctionDef {
     pub params: Vec<Param>,
     pub return_type: Option<TypeName>,
     pub body: Vec<Stmt>,
-    #[allow(dead_code)]
     pub span: Span,
 }
 

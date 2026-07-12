@@ -10,6 +10,7 @@ pub struct TypeName {
 #[derive(Clone, Copy)]
 pub enum UnaryOp {
     Neg, // -x
+    Not, // !x
 }
 
 #[derive(Clone, Copy)]
@@ -29,6 +30,12 @@ pub enum CompareOp {
     Le, // <=
     Gt, // >
     Ge, // >=
+}
+
+#[derive(Clone, Copy)]
+pub enum LogicalOp {
+    And,
+    Or,
 }
 
 /// An expression that (for now) only ever appears where a constant value
@@ -54,6 +61,12 @@ pub enum Expr {
         rhs: Box<Expr>,
         span: Span,
     },
+    Logical {
+        op: LogicalOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        span: Span,
+    },
     Syscall {
         args: Box<[Expr; 7]>,
         span: Span,
@@ -74,6 +87,7 @@ impl Expr {
             Expr::Unary { span, .. } => *span,
             Expr::Binary { span, .. } => *span,
             Expr::Compare { span, .. } => *span,
+            Expr::Logical { span, .. } => *span,
             Expr::Syscall { span, .. } => *span,
             Expr::Call { span, .. } => *span,
         }

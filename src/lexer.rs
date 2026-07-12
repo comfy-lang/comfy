@@ -37,6 +37,9 @@ pub enum TokenKind {
     Star,
     Slash,
     Percent,
+    Bang,
+    AndAnd,
+    OrOr,
 
     Eof,
 }
@@ -84,10 +87,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 if bytes.get(i + 1) == Some(&b'=') {
                     push(&mut tokens, TokenKind::NotEq, &mut i, 2);
                 } else {
-                    return Err(Diagnostic::error(
-                        "unexpected character '!' (did you mean '!='?)",
-                        Span::new(i, i + 1),
-                    ));
+                    push(&mut tokens, TokenKind::Bang, &mut i, 1);
                 }
             }
             '<' => {
@@ -115,6 +115,27 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             '*' => push(&mut tokens, TokenKind::Star, &mut i, 1),
             '/' => push(&mut tokens, TokenKind::Slash, &mut i, 1),
             '%' => push(&mut tokens, TokenKind::Percent, &mut i, 1),
+
+            '&' => {
+                if bytes.get(i + 1) == Some(&b'&') {
+                    push(&mut tokens, TokenKind::AndAnd, &mut i, 2);
+                } else {
+                    return Err(Diagnostic::error(
+                        "unexpected character '&' (bitwise '&' isn't supported yet - did you mean '&&'?)",
+                        Span::new(i, i + 1),
+                    ));
+                }
+            }
+            '|' => {
+                if bytes.get(i + 1) == Some(&b'|') {
+                    push(&mut tokens, TokenKind::OrOr, &mut i, 2);
+                } else {
+                    return Err(Diagnostic::error(
+                        "unexpected character '|' (bitwise '|' isn't supported yet - did you mean '||'?)",
+                        Span::new(i, i + 1),
+                    ));
+                }
+            }
 
             '$' => {
                 let start = i;

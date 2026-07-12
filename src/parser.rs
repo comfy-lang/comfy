@@ -1,4 +1,6 @@
-use crate::ast::{BinOp, CompareOp, Expr, FunctionDef, Param, Program, Stmt, TypeName, UnaryOp};
+use crate::ast::{
+    BinOp, CompareOp, Expr, FunctionDef, LogicalOp, Param, Program, Stmt, TypeName, UnaryOp,
+};
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
 
@@ -270,6 +272,42 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, Diagnostic> {
+        self.parse_or()
+    }
+
+    fn parse_or(&mut self) -> Result<Expr, Diagnostic> {
+        let mut lhs = self.parse_and()?;
+        while self.at(&TokenKind::OrOr) {
+            self.advance();
+            let rhs = self.parse_and()?;
+            let span = lhs.span().to(rhs.span());
+            lhs = Expr::Logical {
+                op: LogicalOp::Or,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            };
+        }
+        Ok(lhs)
+    }
+
+    fn parse_and(&mut self) -> Result<Expr, Diagnostic> {
+        let mut lhs = self.parse_compare()?;
+        while self.at(&TokenKind::AndAnd) {
+            self.advance();
+            let rhs = self.parse_compare()?;
+            let span = lhs.span().to(rhs.span());
+            lhs = Expr::Logical {
+                op: LogicalOp::And,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            };
+        }
+        Ok(lhs)
+    }
+
+    fn parse_compare(&mut self) -> Result<Expr, Diagnostic> {
         let lhs = self.parse_binary(0)?;
 
         if let Some(op) = self.peek_compare_op() {
@@ -341,10 +379,21 @@ impl<'a> Parser<'a> {
         if self.at(&TokenKind::Minus) {
             let start = self.span();
             self.advance();
-            let operand = self.parse_unary()?; // recurse: allows `--x`, harmless
+            let operand = self.parse_unary()?;
             let span = start.to(operand.span());
             return Ok(Expr::Unary {
                 op: UnaryOp::Neg,
+                operand: Box::new(operand),
+                span,
+            });
+        }
+        if self.at(&TokenKind::Bang) {
+            let start = self.span();
+            self.advance();
+            let operand = self.parse_unary()?;
+            let span = start.to(operand.span());
+            return Ok(Expr::Unary {
+                op: UnaryOp::Not,
                 operand: Box::new(operand),
                 span,
             });

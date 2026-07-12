@@ -37,6 +37,13 @@ fn resolve_type(ty: &ast::TypeName) -> Result<Ty, Diagnostic> {
     }
 }
 
+fn logical_op_str(op: ast::LogicalOp) -> &'static str {
+    match op {
+        ast::LogicalOp::And => "&&",
+        ast::LogicalOp::Or => "||",
+    }
+}
+
 pub struct CheckedProgram {
     pub functions: Vec<CheckedFunction>,
 }
@@ -64,6 +71,11 @@ pub enum CheckedExpr {
     },
     Compare {
         op: ast::CompareOp,
+        lhs: Box<CheckedExpr>,
+        rhs: Box<CheckedExpr>,
+    },
+    Logical {
+        op: ast::LogicalOp,
         lhs: Box<CheckedExpr>,
         rhs: Box<CheckedExpr>,
     },
@@ -421,26 +433,53 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
 
         ast::Expr::Unary { op, operand, span } => {
             let (operand, ty) = lower_expr(operand, ctx)?;
-            if ty != Ty::Int {
-                return Err(Diagnostic::error(
-                    format!("cannot negate a '{}' - '-' only applies to integers", ty),
-                    *span,
-                ));
-            }
-            match (op, operand) {
-                (ast::UnaryOp::Neg, CheckedExpr::Const(value)) => {
-                    let folded = value.checked_neg().ok_or_else(|| {
-                        Diagnostic::error("negation overflows a 64-bit integer", *span)
-                    })?;
-                    Ok((to_checked_const(folded, *span)?, Ty::Int))
+            match op {
+                ast::UnaryOp::Neg => {
+                    if ty != Ty::Int {
+                        return Err(Diagnostic::error(
+                            format!("cannot negate a '{}' - '-' only applies to integers", ty),
+                            *span,
+                        ));
+                    }
+                    match operand {
+                        CheckedExpr::Const(value) => {
+                            let folded = value.checked_neg().ok_or_else(|| {
+                                Diagnostic::error("negation overflows a 64-bit integer", *span)
+                            })?;
+                            Ok((to_checked_const(folded, *span)?, Ty::Int))
+                        }
+                        operand => Ok((
+                            CheckedExpr::Unary {
+                                op: ast::UnaryOp::Neg,
+                                operand: Box::new(operand),
+                            },
+                            Ty::Int,
+                        )),
+                    }
                 }
-                (ast::UnaryOp::Neg, operand) => Ok((
-                    CheckedExpr::Unary {
-                        op: ast::UnaryOp::Neg,
-                        operand: Box::new(operand),
-                    },
-                    Ty::Int,
-                )),
+                ast::UnaryOp::Not => {
+                    if ty != Ty::Bool {
+                        return Err(Diagnostic::error(
+                            format!(
+                                "cannot apply '!' to a '{}' - '!' only applies to booleans",
+                                ty
+                            ),
+                            *span,
+                        ));
+                    }
+                    match operand {
+                        CheckedExpr::Const(value) => {
+                            Ok((CheckedExpr::Const(if value == 0 { 1 } else { 0 }), Ty::Bool))
+                        }
+                        operand => Ok((
+                            CheckedExpr::Unary {
+                                op: ast::UnaryOp::Not,
+                                operand: Box::new(operand),
+                            },
+                            Ty::Bool,
+                        )),
+                    }
+                }
             }
         }
 
@@ -501,6 +540,50 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
                 }
                 (lhs, rhs) => Ok((
                     CheckedExpr::Compare {
+                        op: *op,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
+                    Ty::Bool,
+                )),
+            }
+        }
+
+        ast::Expr::Logical { op, lhs, rhs, span } => {
+            let (lhs, lhs_ty) = lower_expr(lhs, ctx)?;
+            if lhs_ty != Ty::Bool {
+                return Err(Diagnostic::error(
+                    format!(
+                        "'{}' only applies to booleans, found '{}' on the left",
+                        logical_op_str(*op),
+                        lhs_ty
+                    ),
+                    *span,
+                ));
+            }
+
+            let (rhs, rhs_ty) = lower_expr(rhs, ctx)?;
+            if rhs_ty != Ty::Bool {
+                return Err(Diagnostic::error(
+                    format!(
+                        "'{}' only applies to booleans, found '{}' on the right",
+                        logical_op_str(*op),
+                        rhs_ty
+                    ),
+                    *span,
+                ));
+            }
+
+            match (lhs, rhs) {
+                (CheckedExpr::Const(lhs_value), CheckedExpr::Const(rhs_value)) => {
+                    let result = match op {
+                        ast::LogicalOp::And => lhs_value != 0 && rhs_value != 0,
+                        ast::LogicalOp::Or => lhs_value != 0 || rhs_value != 0,
+                    };
+                    Ok((CheckedExpr::Const(result as i64), Ty::Bool))
+                }
+                (lhs, rhs) => Ok((
+                    CheckedExpr::Logical {
                         op: *op,
                         lhs: Box::new(lhs),
                         rhs: Box::new(rhs),

@@ -1,0 +1,4 @@
+fn main() {
+    let mut code = $syscall(20, 0, 0, 0, 0, 0, 0); // e.g. getpid() on arm32 EABI, nr 20
+    $syscall(1, code, 0, 0, 0, 0, 0);
+}

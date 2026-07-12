@@ -71,17 +71,22 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         match &self.current().kind {
             TokenKind::Let => self.parse_let_stmt(),
-            TokenKind::Intrinsic(_) => self.parse_syscall_stmt(),
-            _ => Err(Diagnostic::error(
-                format!("expected a statement, found {:?}", self.current().kind),
-                self.span(),
-            )),
+            TokenKind::Ident(_) => self.parse_assign_stmt(),
+            _ => self.parse_expr_stmt(),
         }
     }
 
     fn parse_let_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.span();
         self.expect(&TokenKind::Let)?;
+
+        let mutable = if self.at(&TokenKind::Mut) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Equals)?;
         let value = self.parse_expr()?;
@@ -90,20 +95,39 @@ impl<'a> Parser<'a> {
 
         Ok(Stmt::Let {
             name,
+            mutable,
             value,
             span: start.to(end),
         })
     }
 
-    fn parse_syscall_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+    fn parse_assign_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.span();
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Equals)?;
+        let value = self.parse_expr()?;
+        let end = self.span();
+        self.expect(&TokenKind::Semicolon)?;
 
-        let name = match &self.current().kind {
-            TokenKind::Intrinsic(name) => name.clone(),
-            _ => unreachable!("caller already checked this is an intrinsic"),
-        };
-        self.advance();
+        Ok(Stmt::Assign {
+            name,
+            value,
+            span: start.to(end),
+        })
+    }
 
+    fn parse_expr_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.span();
+        let value = self.parse_expr()?;
+        let end = self.span();
+        self.expect(&TokenKind::Semicolon)?;
+        Ok(Stmt::Expr {
+            value,
+            span: start.to(end),
+        })
+    }
+
+    fn parse_syscall_args(&mut self, name: String, start: Span) -> Result<Expr, Diagnostic> {
         if name != "syscall" {
             return Err(Diagnostic::error(
                 format!(
@@ -128,7 +152,6 @@ impl<'a> Parser<'a> {
 
         let end = self.span();
         self.expect(&TokenKind::RParen)?;
-        self.expect(&TokenKind::Semicolon)?;
 
         if args.len() != 7 {
             return Err(Diagnostic::error(
@@ -143,8 +166,8 @@ impl<'a> Parser<'a> {
         let args: [Expr; 7] = args
             .try_into()
             .unwrap_or_else(|_| unreachable!("length checked above"));
-        Ok(Stmt::Syscall {
-            args,
+        Ok(Expr::Syscall {
+            args: Box::new(args),
             span: start.to(end),
         })
     }
@@ -224,6 +247,11 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_expr()?;
                 self.expect(&TokenKind::RParen)?;
                 Ok(inner)
+            }
+            TokenKind::Intrinsic(name) => {
+                let name = name.clone();
+                self.advance();
+                self.parse_syscall_args(name, span)
             }
             other => Err(Diagnostic::error(
                 format!("expected an expression, found {:?}", other),

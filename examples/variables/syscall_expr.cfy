@@ -1,0 +1,4 @@
+fn main() {
+    let mut written = $syscall(4, 1, 0, 0, 0, 0, 0); // some syscall returning a value in r0
+    $syscall(1, written, 0, 0, 0, 0, 0); // exit with whatever it returned
+}

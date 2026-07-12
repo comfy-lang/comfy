@@ -1,0 +1,12 @@
+// This is a simple example of mutability in Comfy.
+// It shows how to declare a mutable variable and change its value.
+//
+// In this example, we declare a mutable variable `code` and assign it the value of `1 + 1`.
+// We then change the value of `code` to `code * 20 + 1`, which evaluates to `41`.
+// Finally, we exit the program with the value of `code`.
+
+fn main() {
+    let mut code = 1 + 1;
+    code = code * 20 + 1;
+    $syscall(1, code, 0, 0, 0, 0, 0); // exit with 41
+}

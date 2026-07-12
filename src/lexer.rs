@@ -6,6 +6,7 @@ use crate::diag::{Diagnostic, Span};
 pub enum TokenKind {
     Fn,
     Let,
+    Mut,
     Ident(String),
     Int(i64),
     /// A `$name` intrinsic, e.g. `$syscall`.
@@ -111,6 +112,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 let kind = match text {
                     "fn" => TokenKind::Fn,
                     "let" => TokenKind::Let,
+                    "mut" => TokenKind::Mut,
                     _ => TokenKind::Ident(text.to_string()),
                 };
                 tokens.push(Token {

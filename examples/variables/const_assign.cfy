@@ -1,0 +1,14 @@
+// This is a simple example of a non-mutable constant assignment in Comfy.
+// It shows how to declare a non-mutable variable and assign it a value.
+//
+// In this example, we declare a non-mutable variable `code`
+// and assign it the value of `1 + 1`.
+// We then attempt to change the value of `code` to `code * 20 + 1`, which
+// will result in a compile-time error because `code` is not mutable.
+// Finally, we exit the program with the value of `code`.
+
+fn main() {
+    let code = 1 + 1;
+    code = code * 20 + 1; // compile-time error: cannot assign to 'code' - it is a constant, not 'mut'
+    $syscall(1, code, 0, 0, 0, 0, 0); // exit with 41
+}

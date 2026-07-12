@@ -68,5 +68,47 @@ fn eval_const(expr: &ast::Expr, symbols: &HashMap<String, i64>) -> Result<i64, D
             .get(name)
             .copied()
             .ok_or_else(|| Diagnostic::error(format!("undefined name '{}'", name), *span)),
+
+        ast::Expr::Unary { op, operand, span } => {
+            let value = eval_const(operand, symbols)?;
+            match op {
+                ast::UnaryOp::Neg => value
+                    .checked_neg()
+                    .ok_or_else(|| Diagnostic::error("negation overflows a 64-bit integer", *span)),
+            }
+        }
+
+        ast::Expr::Binary { op, lhs, rhs, span } => {
+            let lhs_value = eval_const(lhs, symbols)?;
+            let rhs_value = eval_const(rhs, symbols)?;
+
+            match op {
+                ast::BinOp::Add => lhs_value
+                    .checked_add(rhs_value)
+                    .ok_or_else(|| Diagnostic::error("addition overflows a 64-bit integer", *span)),
+                ast::BinOp::Sub => lhs_value.checked_sub(rhs_value).ok_or_else(|| {
+                    Diagnostic::error("subtraction overflows a 64-bit integer", *span)
+                }),
+                ast::BinOp::Mul => lhs_value.checked_mul(rhs_value).ok_or_else(|| {
+                    Diagnostic::error("multiplication overflows a 64-bit integer", *span)
+                }),
+                ast::BinOp::Div => {
+                    if rhs_value == 0 {
+                        return Err(Diagnostic::error("division by zero", *span));
+                    }
+                    lhs_value.checked_div(rhs_value).ok_or_else(|| {
+                        Diagnostic::error("division overflows a 64-bit integer", *span)
+                    })
+                }
+                ast::BinOp::Rem => {
+                    if rhs_value == 0 {
+                        return Err(Diagnostic::error("division by zero (in '%')", *span));
+                    }
+                    lhs_value.checked_rem(rhs_value).ok_or_else(|| {
+                        Diagnostic::error("remainder overflows a 64-bit integer", *span)
+                    })
+                }
+            }
+        }
     }
 }

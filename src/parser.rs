@@ -71,6 +71,7 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         match &self.current().kind {
             TokenKind::Let => self.parse_let_stmt(),
+            TokenKind::Ident(_) => self.parse_assign_stmt(),
             TokenKind::Intrinsic(_) => self.parse_syscall_stmt(),
             _ => Err(Diagnostic::error(
                 format!("expected a statement, found {:?}", self.current().kind),
@@ -82,6 +83,14 @@ impl<'a> Parser<'a> {
     fn parse_let_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.span();
         self.expect(&TokenKind::Let)?;
+
+        let mutable = if self.at(&TokenKind::Mut) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Equals)?;
         let value = self.parse_expr()?;
@@ -89,6 +98,22 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Semicolon)?;
 
         Ok(Stmt::Let {
+            name,
+            mutable,
+            value,
+            span: start.to(end),
+        })
+    }
+
+    fn parse_assign_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.span();
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Equals)?;
+        let value = self.parse_expr()?;
+        let end = self.span();
+        self.expect(&TokenKind::Semicolon)?;
+
+        Ok(Stmt::Assign {
             name,
             value,
             span: start.to(end),

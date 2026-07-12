@@ -1,134 +1,61 @@
 <center>
-<img  src="./assets/comfylang.png"  alt="comfy logo">
-</center>  
+<img src="./assets/comfylang.png" alt="comfy logo">
+</center>
 
-**comfy** is a low-level, compiled scripting language with direct [arm32](https://en.wikipedia.org/wiki/ARM_architecture_family#32-bit_architecture) syscall access.
+**comfylang** is a low-level, statically-typed, Rust/C-flavored systems language, with its compiler (`comfyc`) currently compiling straight to ARM32 assembly.
 
-## Features
+> **Status: full rewrite in progress.** The compiler is being rebuilt from scratch with a proper architecture (spanned lexer, real diagnostics, a type checker, an IR, and a pluggable backend trait) instead of the original direct AST-walking interpreter-style code generator. The language surface is intentionally minimal right now and will grow step by step. See "Roadmap" below.
 
-- Direct access to arm32 syscalls
-- Simple syntax for type-safe, low-level programming
-- Compiles to arm32 assembly
+## Try it
 
-## Example  
-The following example writes `hello comfy!` to stdout and exits with exit code `0`.
+The dev environment is a [Nix flake](./flake.nix) providing the Rust toolchain, an ARM32 cross toolchain (assembler + linker), and `qemu-arm`, so you can build and run ARM32 binaries from any host architecture:
+
+```sh
+nix develop
+
+# compile a .cfy file to ARM32 assembly
+cargo run -- examples/exit_code.cfy
+
+# assemble + link the generated assembly
+util/link_compile.sh build/main.s
+
+# run the resulting binary (native on ARM32 hosts, qemu-arm everywhere else)
+util/host-run.sh build/main
+
+# ...or all of the above in one go:
+util/run.sh examples/exit_code.cfy
 ```
+
+## Current language surface
+
+Right now the compiler understands exactly one thing: a single `fn main()` containing calls to the one compiler intrinsic, `$syscall`:
+
+```rust
+// examples/exit_code.cfy
 fn main() {
-  str hello_text = "hello comfy!\n";
-  $write(1, hello_text);
-  $exit(0);
+    $syscall(1, 42, 0, 0, 0, 0, 0);
 }
 ```
 
-## Currently supported syscalls
-**comfy** provides direct wrappers to arm32 syscalls, stripping away
-boilerplate code such as setting up registers manually.
-Syscall wrappers are prefixed with `$`.
-The following syscalls are currently supported or next in development:
+`$syscall(nr, a0, a1, a2, a3, a4, a5)` maps directly onto the Linux ARM EABI syscall convention (syscall number in `r7`, up to 6 arguments in `r0`-`r5`). Named wrappers like `write`/`read`/`exit` existed in the previous implementation and will come back as ordinary standard-library functions built on top of this single intrinsic, once comfylang has real functions — rather than being hardcoded into the compiler one by one as before.
 
-| Supported? | Syscall # | Syscall Name | Wrapper Function | Description | Return Value |
-| --- | --- | --- | --- | --- | --- |
-| ✅ | 1 | `exit` | `$exit(status)` | Terminate the calling process. | Does not return. |
-| ✅ | 3 | `read` | `$read(fd, buf)` | Read from a file descriptor. | Number of bytes read, or -1 on error.|
-| ✅ | 4 | `write` | `$write(fd, buf)` | Write to a file descriptor. | Number of bytes written, or -1 on error.|
-| ✅  | 5 | `open` | `$open(path, flags)` | Open a file. | File descriptor, or -1 on error. |
-| ✅  | 143 | `sysinfo` | `$sysinfo(buf)` | Get system information. | 0 on success, -1 on error. |
+## Design goals
 
-  
-  
-  
-
-## Variables
-**comfy** uses explicit types, which have to be stated when a variable is initialized. Currently available types are `bool`, `char`, `int8`, `int16`, `int32` and `str`.  
-
-### Example  
-```comfy
-fn main() {
-  str text = "hello!\n";
-  $write(1, text);
-
-  int8 code = 0;
-  $exit(code);
-}
-```
-
-Variables are immutable by default. To declare a variable as mutable, use the `mut` keyword.
-  
-```comfy
-fn main() {
-  mut int8 exit_code = 1;
-
-  exit_code = 0;
-
-  $exit(exit_code);
-}
-
-```
-
-## Include System & Conditional Compilation
-
-**comfy** supports a simple preprocessor system similar to C/C++, allowing you to include external files and conditionally compile blocks of code using configuration flags.
-
-### File Inclusion
-
-You can include system or user files using the `#include` directive.
-
-* `#include<sys>` – loads a system library from the comfy standard path (e.g., `/usr/include/comfylang/sys`)
-* `#include<"./custom.fy">` – loads a user-defined file relative to your project or include path
-
-These inclusions are handled before compilation and act as if the contents of the file were directly pasted at the `#include` line.
-
-#### Example
-
-```comfy
-#include<sys>
-#include<"lib/utils.fy">
-
-fn main() {
-  $write(1, helloText);
-  $exit(0);
-}
-```
-
----
-
-### Conditional Compilation
-
-comfy supports `#if`, `#else`, and `#endif` to include or exclude code depending on flags set in your `project.comfx` configuration file.
-
-These flags are defined as key-value pairs under the `[defines]` section of the config, and evaluated before compilation.
-
-#### Supported conditions:
-
-* `#if FLAG_NAME`
-* `#if FLAG_NAME == "value"`
-* `#if FLAG_NAME != "value"`
-* `#else`
-* `#endif`
-
-#### Example
-
-```comfy
-#if ENABLE_LOGGING
-  $write(1, "Logging is on\n");
-#endif
-
-#if VERSION == "1.2.3"
-  $write(1, "Version matches\n");
-#else
-  $write(1, "Version mismatch\n");
-#endif
-```
-
-#### Example config (`project.comfx` in TOML format)
-
-```toml
-[defines]
-ENABLE_LOGGING = "true"
-VERSION = "1.2.3"
-```
-
----
+- Rust-flavored syntax, C-level control: manual memory management, structs, pointers, full type safety.
+- Turing-complete, self-hosted: the compiler will eventually be rewritten in comfylang itself.
+- Hand-written backend, ARM32 first, with x86 and others planned via a `Backend` trait.
+- Compile-time optimizations (constant folding, dead-code elimination, and more) once an IR exists.
+- A custom package manager down the line, managing both compiler versions and dependencies.
 
 ## Roadmap
-Project progress, planned and future features can be viewed on the [Project board](https://github.com/users/crnvl/projects/8).
+
+Planned, in rough order:
+
+1. ~~Lexer/parser/codegen skeleton with real diagnostics~~ ✅
+2. Integer types + variables
+3. Expressions (arithmetic, comparison, logical) with precedence
+4. Control flow (`if`/`else`, `while`)
+5. User-defined functions, calling convention, recursion
+6. Pointers, arrays, `struct`s
+7. IR + optimization passes
+8. Additional backends (x86_64, ...), standard library, self-hosting prep

@@ -2,3 +2,7 @@
 testing.txt
 *.s
 /build
+result
+result-*
+.direnv/flake-profile
+.direnv/flake-profile-1-link

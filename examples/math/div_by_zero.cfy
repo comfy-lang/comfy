@@ -1,0 +1,7 @@
+// This is a simple example of a division by zero error in Comfy.
+
+fn main() {
+    let x = 1 / 0; // division by zero, should cause a compile-time error
+
+    $syscall(1, x, 0, 0, 0, 0, 0); // exit with code x
+}

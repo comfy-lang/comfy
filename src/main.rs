@@ -1,102 +1,86 @@
 use std::path::{Path, PathBuf};
 
-use crate::{
-    backend::{
-        arm32::{self, syscall_mapper::Architecture},
-        generator::generate,
-    },
-    extra::config::load_config,
-    frontend::{parser::parse, preprocessor, tokenizer::tokenize},
-};
+use crate::codegen::{Backend, arm32::Arm32Backend};
 
-mod backend;
-mod extra;
-mod frontend;
+mod ast;
+mod codegen;
+mod config;
+mod diag;
+mod lexer;
+mod parser;
+mod sema;
 
 fn main() {
-    let config_file = PathBuf::from("project.comfx");
-    let config = load_config(config_file.to_str().expect("Failed to convert config file path to a UTF-8 string"));
-
     let args: Vec<String> = std::env::args().collect();
-
     if args.len() < 2 {
-        eprintln!("Usage: {} <file_path>", args[0]);
+        eprintln!("Usage: {} <file.cfy>", args[0]);
         std::process::exit(1);
     }
 
-    let arch = match config.target.arch.as_str() {
-        "arm32" => Architecture::Arm32,
-        "x86" => panic!("X86 architecture not supported yet"),
-        "x86_64" => panic!("X86_64 architecture not supported yet"),
-        "arm64" => panic!("ARM64 architecture not supported yet"),
-        other => panic!("Unsupported architecture: {}", other),
+    let input_path = Path::new(&args[1]);
+    let config = config::load_config("project.comfx");
+
+    let backend: Box<dyn Backend> = match config.target.arch.as_str() {
+        "arm32" => Box::new(Arm32Backend),
+        other => {
+            eprintln!(
+                "error: unsupported architecture '{}' (only 'arm32' exists so far)",
+                other
+            );
+            std::process::exit(1);
+        }
     };
 
-    let file_path = &args[1];
-    let input_path = Path::new(file_path);
+    let source = match std::fs::read_to_string(input_path) {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!("error: could not read {}: {}", input_path.display(), e);
+            std::process::exit(1);
+        }
+    };
+
+    let file_name = input_path.display().to_string();
+
+    let tokens = lexer::lex(&source).unwrap_or_else(|diag| {
+        eprintln!("{}", diag.render(&file_name, &source));
+        std::process::exit(1);
+    });
+
+    let program = parser::parse(&tokens).unwrap_or_else(|diag| {
+        eprintln!("{}", diag.render(&file_name, &source));
+        std::process::exit(1);
+    });
+
+    let checked = sema::check(&program).unwrap_or_else(|diag| {
+        eprintln!("{}", diag.render(&file_name, &source));
+        std::process::exit(1);
+    });
+
+    let assembly = backend.emit(&checked);
+
     let file_stem = input_path.file_stem().unwrap_or_default().to_string_lossy();
-
-    let output_path = config
-        .target
-        .output
-        .unwrap_or_else(|| format!("build/{}.s", file_stem));
-
-    let user_paths = vec![PathBuf::from("./src")];
-    let defines = config.defines.clone().unwrap_or_default();
-
-    let preprocessed_content =
-        match preprocessor::preprocess_file(input_path, &user_paths, &defines) {
-            Ok(content) => content,
-            Err(e) => {
-                eprintln!("Error preprocessing file {}: {}", input_path.display(), e);
-                std::process::exit(1);
-            }
-        };
-
-    let verbose = args.get(2).map_or(false, |arg| arg == "--verbose");
-
-    let tokens = tokenize(&preprocessed_content);
-    if verbose {
-        println!("Tokens: {:#?}", tokens);
-    }
-    let ast_nodes = parse(tokens.clone());
-    if verbose {
-        println!("AST Nodes: {:#?}", ast_nodes);
-    }
-
-    let generator = generate(&ast_nodes, arch);
-
-    let assembly_code = arm32::asm::generate_assembly(
-        generator.section_writer.rodata,
-        generator.section_writer.bss,
-        generator.section_writer.text,
+    let output_path = PathBuf::from(
+        config
+            .target
+            .output
+            .unwrap_or_else(|| format!("build/{}.s", file_stem)),
     );
-    if verbose {
-        println!("\nPreprocessed Content:\n\n{}", preprocessed_content);
-        println!("Generated Assembly Code:\n{}", assembly_code);
-    }
 
-    let output_path = Path::new(&output_path);
-
-    if let Some(parent_dir) = output_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent_dir) {
-            eprintln!(
-                "Error creating output directory {}: {}",
-                parent_dir.display(),
-                e
-            );
+    if let Some(parent) = output_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("error: could not create {}: {}", parent.display(), e);
             std::process::exit(1);
         }
     }
 
-    match std::fs::write(output_path, assembly_code) {
+    match std::fs::write(&output_path, assembly) {
         Ok(_) => println!(
-            "Assembly code written to {} <3\nUsing architecture: {:?}",
+            "Wrote {} (target: {})",
             output_path.display(),
-            arch
+            backend.name()
         ),
         Err(e) => {
-            eprintln!("Error writing to {}: {}", output_path.display(), e);
+            eprintln!("error: could not write {}: {}", output_path.display(), e);
             std::process::exit(1);
         }
     }

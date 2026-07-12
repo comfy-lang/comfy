@@ -1,0 +1,13 @@
+// $syscall(nr, a0, a1, a2, a3, a4, a5)
+//
+// maps directly onto the Linux ARM EABI syscall convention: syscall number
+// in r7, up to 6 arguments in r0-r5. Named wrappers like `write`/`read`/
+// `exit` will come back later as ordinary standard-library functions built
+// on top of this intrinsic.
+//
+// This program calls `exit(42)` directly: syscall 1 (exit) with a0 = 42.
+
+fn main() {
+    let code = 42;
+    $syscall(1, code, 0, 0, 0, 0, 0);
+}

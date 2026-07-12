@@ -1,11 +1,3 @@
 [target]
 arch = "arm32"
 output = "build/main.s"
-
-[meta]
-name = "comfy compiler"
-version = "0.1.0"
-author = "the luna company GbR"
-
-[defines]
-ENABLE_LOGGING = "true"

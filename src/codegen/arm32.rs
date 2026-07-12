@@ -4,8 +4,8 @@
 //! the standard EABI convention: syscall number in `r7`, up to 6 arguments
 //! in `r0`-`r5`, trapped with `svc #0`.
 
-use crate::ast::{Program, Stmt};
 use crate::codegen::Backend;
+use crate::sema::{CheckedProgram, CheckedStmt};
 
 pub struct Arm32Backend;
 
@@ -16,13 +16,17 @@ impl Backend for Arm32Backend {
         "arm32"
     }
 
-    fn emit(&self, program: &Program) -> String {
+    fn emit(&self, program: &CheckedProgram) -> String {
         let mut out = String::new();
         out.push_str(".global _start\n");
         out.push_str(".section .text\n");
 
         for function in &program.functions {
-            let label = if function.name == "main" { "_start" } else { &function.name };
+            let label = if function.name == "main" {
+                "_start"
+            } else {
+                &function.name
+            };
             out.push_str(&format!("{}:\n", label));
 
             for stmt in &function.body {
@@ -34,9 +38,9 @@ impl Backend for Arm32Backend {
     }
 }
 
-fn emit_stmt(out: &mut String, stmt: &Stmt) {
+fn emit_stmt(out: &mut String, stmt: &CheckedStmt) {
     match stmt {
-        Stmt::Syscall { args, .. } => {
+        CheckedStmt::Syscall { args, .. } => {
             let [nr, a0, a1, a2, a3, a4, a5] = *args;
             out.push_str(&format!("\tldr r7, ={}\n", nr));
             for (reg, value) in ARG_REGS.iter().zip([a0, a1, a2, a3, a4, a5]) {

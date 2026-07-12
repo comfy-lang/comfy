@@ -1,12 +1,10 @@
 //! Recursive-descent parser.
 //!
-//! Deliberately tiny right now: a single `fn main() { ... }` containing
-//! `$syscall(...)` statements. This is step 1 of the rewrite - enough to
-//! prove the full lex -> parse -> codegen -> assemble -> run pipeline works
-//! end to end. Expressions, variables, control flow, and user-defined
-//! functions all come later.
+//! Grammar so far: a single `fn main() { ... }` containing `let` constant
+//! declarations and `$syscall(...)` statements. Expressions are still just
+//! atoms (int literals or identifiers) - arithmetic comes in a later step.
 
-use crate::ast::{FunctionDef, Program, Stmt};
+use crate::ast::{Expr, FunctionDef, Program, Stmt};
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
 
@@ -28,7 +26,10 @@ impl<'a> Parser<'a> {
         }
 
         if functions.is_empty() {
-            return Err(Diagnostic::error("expected at least a `fn main()`", self.span()));
+            return Err(Diagnostic::error(
+                "expected at least a `fn main()`",
+                self.span(),
+            ));
         }
 
         Ok(Program { functions })
@@ -60,26 +61,55 @@ impl<'a> Parser<'a> {
         let end = self.span();
         self.expect(&TokenKind::RBrace)?;
 
-        Ok(FunctionDef { name, body, span: start.to(end) })
+        Ok(FunctionDef {
+            name,
+            body,
+            span: start.to(end),
+        })
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        match &self.current().kind {
+            TokenKind::Let => self.parse_let_stmt(),
+            TokenKind::Intrinsic(_) => self.parse_syscall_stmt(),
+            _ => Err(Diagnostic::error(
+                format!("expected a statement, found {:?}", self.current().kind),
+                self.span(),
+            )),
+        }
+    }
+
+    fn parse_let_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.span();
+        self.expect(&TokenKind::Let)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Equals)?;
+        let value = self.parse_expr()?;
+        let end = self.span();
+        self.expect(&TokenKind::Semicolon)?;
+
+        Ok(Stmt::Let {
+            name,
+            value,
+            span: start.to(end),
+        })
+    }
+
+    fn parse_syscall_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.span();
 
         let name = match &self.current().kind {
             TokenKind::Intrinsic(name) => name.clone(),
-            _ => {
-                return Err(Diagnostic::error(
-                    format!("expected a statement, found {:?}", self.current().kind),
-                    start,
-                ));
-            }
+            _ => unreachable!("caller already checked this is an intrinsic"),
         };
         self.advance();
 
         if name != "syscall" {
             return Err(Diagnostic::error(
-                format!("unknown intrinsic '${}' - only '$syscall' exists so far", name),
+                format!(
+                    "unknown intrinsic '${}' - only '$syscall' exists so far",
+                    name
+                ),
                 start,
             ));
         }
@@ -88,7 +118,7 @@ impl<'a> Parser<'a> {
 
         let mut args = Vec::new();
         while !self.at(&TokenKind::RParen) {
-            args.push(self.expect_int()?);
+            args.push(self.parse_expr()?);
             if self.at(&TokenKind::Comma) {
                 self.advance();
             } else {
@@ -110,8 +140,33 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        let args: [i64; 7] = args.try_into().unwrap();
-        Ok(Stmt::Syscall { args, span: start.to(end) })
+        let args: [Expr; 7] = args
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("length checked above"));
+        Ok(Stmt::Syscall {
+            args,
+            span: start.to(end),
+        })
+    }
+
+    fn parse_expr(&mut self) -> Result<Expr, Diagnostic> {
+        let span = self.span();
+        match &self.current().kind {
+            TokenKind::Int(value) => {
+                let value = *value;
+                self.advance();
+                Ok(Expr::IntLit(value, span))
+            }
+            TokenKind::Ident(name) => {
+                let name = name.clone();
+                self.advance();
+                Ok(Expr::Ident(name, span))
+            }
+            other => Err(Diagnostic::error(
+                format!("expected an expression, found {:?}", other),
+                span,
+            )),
+        }
     }
 
     fn current(&self) -> &Token {
@@ -153,20 +208,8 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(name)
             }
-            other => {
-                Err(Diagnostic::error(format!("expected an identifier, found {:?}", other), self.span()))
-            }
-        }
-    }
-
-    fn expect_int(&mut self) -> Result<i64, Diagnostic> {
-        match self.current().kind {
-            TokenKind::Int(value) => {
-                self.advance();
-                Ok(value)
-            }
-            _ => Err(Diagnostic::error(
-                format!("expected an integer literal, found {:?}", self.current().kind),
+            other => Err(Diagnostic::error(
+                format!("expected an identifier, found {:?}", other),
                 self.span(),
             )),
         }

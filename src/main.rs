@@ -8,6 +8,7 @@ mod config;
 mod diag;
 mod lexer;
 mod parser;
+mod sema;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -22,7 +23,10 @@ fn main() {
     let backend: Box<dyn Backend> = match config.target.arch.as_str() {
         "arm32" => Box::new(Arm32Backend),
         other => {
-            eprintln!("error: unsupported architecture '{}' (only 'arm32' exists so far)", other);
+            eprintln!(
+                "error: unsupported architecture '{}' (only 'arm32' exists so far)",
+                other
+            );
             std::process::exit(1);
         }
     };
@@ -47,11 +51,20 @@ fn main() {
         std::process::exit(1);
     });
 
-    let assembly = backend.emit(&program);
+    let checked = sema::check(&program).unwrap_or_else(|diag| {
+        eprintln!("{}", diag.render(&file_name, &source));
+        std::process::exit(1);
+    });
+
+    let assembly = backend.emit(&checked);
 
     let file_stem = input_path.file_stem().unwrap_or_default().to_string_lossy();
-    let output_path =
-        PathBuf::from(config.target.output.unwrap_or_else(|| format!("build/{}.s", file_stem)));
+    let output_path = PathBuf::from(
+        config
+            .target
+            .output
+            .unwrap_or_else(|| format!("build/{}.s", file_stem)),
+    );
 
     if let Some(parent) = output_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {

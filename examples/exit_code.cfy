@@ -12,5 +12,6 @@
 // This program calls `exit(42)` directly: syscall 1 (exit) with a0 = 42.
 
 fn main() {
-    $syscall(1, 42, 0, 0, 0, 0, 0);
+    let code = 42;
+    $syscall(1, code, 0, 0, 0, 0, 0);
 }

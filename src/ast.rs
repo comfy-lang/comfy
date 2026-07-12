@@ -16,10 +16,21 @@ pub enum BinOp {
     Rem,
 }
 
+#[derive(Clone, Copy)]
+pub enum CompareOp {
+    Eq, // ==
+    Ne, // !=
+    Lt, // <
+    Le, // <=
+    Gt, // >
+    Ge, // >=
+}
+
 /// An expression that (for now) only ever appears where a constant value
 /// is expected: a `let` initializer, or a `$syscall` argument.
 pub enum Expr {
     IntLit(i64, Span),
+    BoolLit(bool, Span),
     Ident(String, Span),
     Unary {
         op: UnaryOp,
@@ -28,6 +39,12 @@ pub enum Expr {
     },
     Binary {
         op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        span: Span,
+    },
+    Compare {
+        op: CompareOp,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
         span: Span,
@@ -42,19 +59,17 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::IntLit(_, span) => *span,
+            Expr::BoolLit(_, span) => *span,
             Expr::Ident(_, span) => *span,
             Expr::Unary { span, .. } => *span,
             Expr::Binary { span, .. } => *span,
+            Expr::Compare { span, .. } => *span,
             Expr::Syscall { span, .. } => *span,
         }
     }
 }
 
 pub enum Stmt {
-    /// `let NAME = <expr>;` (constant) or `let mut NAME = <expr>;` (a real,
-    /// stack-allocated, runtime local). Plain `let` is resolved away
-    /// entirely during semantic analysis; `let mut` gets an actual stack
-    /// slot and reaches codegen.
     Let {
         name: String,
         mutable: bool,
@@ -62,7 +77,6 @@ pub enum Stmt {
         span: Span,
     },
 
-    /// `NAME = <expr>;` - reassigns an existing `mut` binding.
     Assign {
         name: String,
         value: Expr,
@@ -71,11 +85,35 @@ pub enum Stmt {
 
     Expr {
         value: Expr,
-        /// Kept for future diagnostics (e.g. warning on a useless bare
-        /// expression statement); not read yet.
-        #[allow(dead_code)]
         span: Span,
     },
+
+    If {
+        cond: Expr,
+        then_body: Vec<Stmt>,
+        /// `else if` is just sugar for an `else` block containing a single
+        /// nested `If` - no separate AST node needed.
+        else_body: Option<Vec<Stmt>>,
+        span: Span,
+    },
+
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+}
+
+impl Stmt {
+    pub fn span(&self) -> Span {
+        match self {
+            Stmt::Let { span, .. } => *span,
+            Stmt::Assign { span, .. } => *span,
+            Stmt::Expr { span, .. } => *span,
+            Stmt::If { span, .. } => *span,
+            Stmt::While { span, .. } => *span,
+        }
+    }
 }
 
 pub struct FunctionDef {

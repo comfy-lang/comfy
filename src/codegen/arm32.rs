@@ -21,103 +21,194 @@ impl Backend for Arm32Backend {
     }
 
     fn emit(&self, program: &CheckedProgram) -> String {
-        let mut out = String::new();
-        out.push_str(".global _start\n");
-        out.push_str(".section .text\n");
+        let mut emitter = Emitter {
+            out: String::new(),
+            label_counter: 0,
+        };
+
+        emitter.out.push_str(".global _start\n");
+        emitter.out.push_str(".section .text\n");
 
         for function in &program.functions {
-            emit_function(&mut out, function);
+            emitter.emit_function(function);
         }
 
-        out
+        emitter.out
     }
 }
 
-fn emit_function(out: &mut String, function: &CheckedFunction) {
-    let label = if function.name == "main" {
-        "_start"
-    } else {
-        &function.name
-    };
-    out.push_str(&format!("{}:\n", label));
-
-    if function.frame_size > 0 {
-        let aligned = (function.frame_size + 7) & !7;
-        out.push_str("\tmov fp, sp\n");
-        out.push_str(&format!("\tsub sp, sp, #{}\n", aligned));
-    }
-
-    for stmt in &function.body {
-        emit_stmt(out, stmt);
-    }
+/// Bundles the output buffer with a monotonic counter for generating
+/// unique, deterministic labels (`.Lif_end0`, `.Lwhile_start1`, ...) as
+/// `if`/`while` are walked.
+struct Emitter {
+    out: String,
+    label_counter: usize,
 }
 
-fn emit_stmt(out: &mut String, stmt: &CheckedStmt) {
-    match stmt {
-        CheckedStmt::Store { offset, value } => {
-            emit_expr(out, value);
-            out.push_str("\tpop {r0}\n");
-            out.push_str(&format!("\tstr r0, [fp, #-{}]\n", offset));
+impl Emitter {
+    fn new_label(&mut self, prefix: &str) -> String {
+        let label = format!(".L{}{}", prefix, self.label_counter);
+        self.label_counter += 1;
+        label
+    }
+
+    fn emit_function(&mut self, function: &CheckedFunction) {
+        let label = if function.name == "main" {
+            "_start"
+        } else {
+            &function.name
+        };
+        self.out.push_str(&format!("{}:\n", label));
+
+        if function.frame_size > 0 {
+            let aligned = (function.frame_size + 7) & !7;
+            self.out.push_str("\tmov fp, sp\n");
+            self.out.push_str(&format!("\tsub sp, sp, #{}\n", aligned));
         }
 
-        CheckedStmt::Expr(value) => {
-            emit_expr(out, value);
-            out.push_str("\tpop {r0}\n"); // discard the result, we only wanted the side effect
+        for stmt in &function.body {
+            self.emit_stmt(stmt);
         }
     }
-}
 
-/// Evaluates `expr`, leaving the result on top of the stack.
-fn emit_expr(out: &mut String, expr: &CheckedExpr) {
-    match expr {
-        CheckedExpr::Const(value) => {
-            out.push_str(&format!("\tldr r0, ={}\n", value));
-            out.push_str("\tpush {r0}\n");
-        }
-
-        CheckedExpr::Local(offset) => {
-            out.push_str(&format!("\tldr r0, [fp, #-{}]\n", offset));
-            out.push_str("\tpush {r0}\n");
-        }
-
-        CheckedExpr::Unary { op, operand } => {
-            emit_expr(out, operand);
-            out.push_str("\tpop {r0}\n");
-            match op {
-                ast::UnaryOp::Neg => out.push_str("\trsb r0, r0, #0\n"),
+    fn emit_stmt(&mut self, stmt: &CheckedStmt) {
+        match stmt {
+            CheckedStmt::Store { offset, value } => {
+                self.emit_expr(value);
+                self.out.push_str("\tpop {r0}\n");
+                self.out
+                    .push_str(&format!("\tstr r0, [fp, #-{}]\n", offset));
             }
-            out.push_str("\tpush {r0}\n");
-        }
 
-        CheckedExpr::Binary { op, lhs, rhs } => {
-            emit_expr(out, lhs);
-            emit_expr(out, rhs);
-            out.push_str("\tpop {r1}\n");
-            out.push_str("\tpop {r0}\n");
-            match op {
-                ast::BinOp::Add => out.push_str("\tadd r0, r0, r1\n"),
-                ast::BinOp::Sub => out.push_str("\tsub r0, r0, r1\n"),
-                ast::BinOp::Mul => out.push_str("\tmul r0, r1, r0\n"),
-                ast::BinOp::Div | ast::BinOp::Rem => {
-                    unreachable!("division/remainder should have been rejected in sema")
+            CheckedStmt::Expr(value) => {
+                self.emit_expr(value);
+                self.out.push_str("\tpop {r0}\n"); // discard the result, we only wanted the side effect
+            }
+
+            CheckedStmt::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                self.emit_expr(cond);
+                self.out.push_str("\tpop {r0}\n");
+                self.out.push_str("\tcmp r0, #0\n");
+
+                let end_label = self.new_label("if_end");
+
+                if let Some(else_body) = else_body {
+                    let else_label = self.new_label("if_else");
+                    self.out.push_str(&format!("\tbeq {}\n", else_label));
+                    for stmt in then_body {
+                        self.emit_stmt(stmt);
+                    }
+                    self.out.push_str(&format!("\tb {}\n", end_label));
+                    self.out.push_str(&format!("{}:\n", else_label));
+                    for stmt in else_body {
+                        self.emit_stmt(stmt);
+                    }
+                } else {
+                    self.out.push_str(&format!("\tbeq {}\n", end_label));
+                    for stmt in then_body {
+                        self.emit_stmt(stmt);
+                    }
                 }
-            }
-            out.push_str("\tpush {r0}\n");
-        }
 
-        CheckedExpr::Syscall { args } => {
-            for arg in args.iter() {
-                emit_expr(out, arg);
+                self.out.push_str(&format!("{}:\n", end_label));
             }
-            out.push_str("\tpop {r5}\n");
-            out.push_str("\tpop {r4}\n");
-            out.push_str("\tpop {r3}\n");
-            out.push_str("\tpop {r2}\n");
-            out.push_str("\tpop {r1}\n");
-            out.push_str("\tpop {r0}\n");
-            out.push_str("\tpop {r7}\n");
-            out.push_str("\tsvc #0\n");
-            out.push_str("\tpush {r0}\n"); // leave the syscall's return value on the stack
+
+            CheckedStmt::While { cond, body } => {
+                let start_label = self.new_label("while_start");
+                let end_label = self.new_label("while_end");
+
+                self.out.push_str(&format!("{}:\n", start_label));
+                self.emit_expr(cond);
+                self.out.push_str("\tpop {r0}\n");
+                self.out.push_str("\tcmp r0, #0\n");
+                self.out.push_str(&format!("\tbeq {}\n", end_label));
+
+                for stmt in body {
+                    self.emit_stmt(stmt);
+                }
+
+                self.out.push_str(&format!("\tb {}\n", start_label));
+                self.out.push_str(&format!("{}:\n", end_label));
+            }
+        }
+    }
+
+    /// Evaluates `expr`, leaving the result on top of the stack.
+    fn emit_expr(&mut self, expr: &CheckedExpr) {
+        match expr {
+            CheckedExpr::Const(value) => {
+                self.out.push_str(&format!("\tldr r0, ={}\n", value));
+                self.out.push_str("\tpush {r0}\n");
+            }
+
+            CheckedExpr::Local(offset) => {
+                self.out
+                    .push_str(&format!("\tldr r0, [fp, #-{}]\n", offset));
+                self.out.push_str("\tpush {r0}\n");
+            }
+
+            CheckedExpr::Unary { op, operand } => {
+                self.emit_expr(operand);
+                self.out.push_str("\tpop {r0}\n");
+                match op {
+                    ast::UnaryOp::Neg => self.out.push_str("\trsb r0, r0, #0\n"),
+                }
+                self.out.push_str("\tpush {r0}\n");
+            }
+
+            CheckedExpr::Binary { op, lhs, rhs } => {
+                self.emit_expr(lhs);
+                self.emit_expr(rhs);
+                self.out.push_str("\tpop {r1}\n");
+                self.out.push_str("\tpop {r0}\n");
+                match op {
+                    ast::BinOp::Add => self.out.push_str("\tadd r0, r0, r1\n"),
+                    ast::BinOp::Sub => self.out.push_str("\tsub r0, r0, r1\n"),
+                    ast::BinOp::Mul => self.out.push_str("\tmul r0, r1, r0\n"),
+                    ast::BinOp::Div | ast::BinOp::Rem => {
+                        unreachable!("division/remainder should have been rejected in sema")
+                    }
+                }
+                self.out.push_str("\tpush {r0}\n");
+            }
+
+            CheckedExpr::Compare { op, lhs, rhs } => {
+                self.emit_expr(lhs);
+                self.emit_expr(rhs);
+                self.out.push_str("\tpop {r1}\n");
+                self.out.push_str("\tpop {r0}\n");
+                self.out.push_str("\tcmp r0, r1\n");
+                self.out.push_str("\tmov r0, #0\n");
+                let cond = match op {
+                    ast::CompareOp::Eq => "moveq",
+                    ast::CompareOp::Ne => "movne",
+                    ast::CompareOp::Lt => "movlt",
+                    ast::CompareOp::Le => "movle",
+                    ast::CompareOp::Gt => "movgt",
+                    ast::CompareOp::Ge => "movge",
+                };
+                self.out.push_str(&format!("\t{} r0, #1\n", cond));
+                self.out.push_str("\tpush {r0}\n");
+            }
+
+            CheckedExpr::Syscall { args } => {
+                for arg in args.iter() {
+                    self.emit_expr(arg);
+                }
+                self.out.push_str("\tpop {r5}\n");
+                self.out.push_str("\tpop {r4}\n");
+                self.out.push_str("\tpop {r3}\n");
+                self.out.push_str("\tpop {r2}\n");
+                self.out.push_str("\tpop {r1}\n");
+                self.out.push_str("\tpop {r0}\n");
+                self.out.push_str("\tpop {r7}\n");
+                self.out.push_str("\tsvc #0\n");
+                self.out.push_str("\tpush {r0}\n");
+            }
         }
     }
 }

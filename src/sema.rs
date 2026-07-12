@@ -38,18 +38,14 @@ pub enum CheckedExpr {
         lhs: Box<CheckedExpr>,
         rhs: Box<CheckedExpr>,
     },
+    Syscall {
+        args: Box<[CheckedExpr; 7]>,
+    },
 }
 
 pub enum CheckedStmt {
-    /// Store a value into a `mut` local's stack slot - used for both a
-    /// `let mut` initializer and a later `NAME = ...;` reassignment.
-    Store {
-        offset: usize,
-        value: CheckedExpr,
-    },
-    Syscall {
-        args: [CheckedExpr; 7],
-    },
+    Store { offset: usize, value: CheckedExpr },
+    Expr(CheckedExpr),
 }
 
 pub fn check(program: &ast::Program) -> Result<CheckedProgram, Diagnostic> {
@@ -135,17 +131,9 @@ fn check_function(function: &ast::FunctionDef) -> Result<CheckedFunction, Diagno
                 body.push(CheckedStmt::Store { offset, value });
             }
 
-            ast::Stmt::Syscall { args, .. } => {
-                let resolved = [
-                    lower_expr(&args[0], &symbols)?,
-                    lower_expr(&args[1], &symbols)?,
-                    lower_expr(&args[2], &symbols)?,
-                    lower_expr(&args[3], &symbols)?,
-                    lower_expr(&args[4], &symbols)?,
-                    lower_expr(&args[5], &symbols)?,
-                    lower_expr(&args[6], &symbols)?,
-                ];
-                body.push(CheckedStmt::Syscall { args: resolved });
+            ast::Stmt::Expr { value, .. } => {
+                let value = lower_expr(value, &symbols)?;
+                body.push(CheckedStmt::Expr(value));
             }
         }
     }
@@ -224,6 +212,21 @@ fn lower_expr(
                     )),
                 },
             }
+        }
+
+        ast::Expr::Syscall { args, .. } => {
+            let lowered = [
+                lower_expr(&args[0], symbols)?,
+                lower_expr(&args[1], symbols)?,
+                lower_expr(&args[2], symbols)?,
+                lower_expr(&args[3], symbols)?,
+                lower_expr(&args[4], symbols)?,
+                lower_expr(&args[5], symbols)?,
+                lower_expr(&args[6], symbols)?,
+            ];
+            Ok(CheckedExpr::Syscall {
+                args: Box::new(lowered),
+            })
         }
     }
 }

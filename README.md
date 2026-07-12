@@ -75,7 +75,7 @@ Planned, in rough order:
 2. ~~Integer types + variables (`let`/`let mut`, assignment)~~ ✅
 3. ~~Arithmetic + comparison expressions with precedence~~ ✅
 4. ~~Control flow (`if`/`else`, `while`)~~ ✅
-5. Logical operators (`&&`, `||`, `!`) with short-circuit evaluation
+5. ~~Logical operators (`&&`, `||`, `!`) with short-circuit evaluation~~ ✅
 6. ~~User-defined functions, calling convention, recursion~~ ✅
 7. Pointers, arrays, `struct`s
 8. IR + optimization passes

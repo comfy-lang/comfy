@@ -1,0 +1,16 @@
+fn main() {
+    let mut sum = add(2, 3);
+    let mut fact = factorial(5);
+    $syscall(1, sum + fact, 0, 0, 0, 0, 0); // 5 + 120 = 125
+}
+
+fn add(a: int, b: int) -> int {
+    return a + b;
+}
+
+fn factorial(n: int) -> int {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}

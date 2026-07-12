@@ -10,6 +10,7 @@ pub enum TokenKind {
     If,
     Else,
     While,
+    Return,
     True,
     False,
     Ident(String),
@@ -21,6 +22,7 @@ pub enum TokenKind {
     LBrace,
     RBrace,
     Comma,
+    Colon,
     Semicolon,
     Equals,
     EqEq,
@@ -31,6 +33,7 @@ pub enum TokenKind {
     Ge,
     Plus,
     Minus,
+    Arrow,
     Star,
     Slash,
     Percent,
@@ -68,6 +71,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             '{' => push(&mut tokens, TokenKind::LBrace, &mut i, 1),
             '}' => push(&mut tokens, TokenKind::RBrace, &mut i, 1),
             ',' => push(&mut tokens, TokenKind::Comma, &mut i, 1),
+            ':' => push(&mut tokens, TokenKind::Colon, &mut i, 1),
             ';' => push(&mut tokens, TokenKind::Semicolon, &mut i, 1),
             '=' => {
                 if bytes.get(i + 1) == Some(&b'=') {
@@ -101,7 +105,13 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
             }
             '+' => push(&mut tokens, TokenKind::Plus, &mut i, 1),
-            '-' => push(&mut tokens, TokenKind::Minus, &mut i, 1),
+            '-' => {
+                if bytes.get(i + 1) == Some(&b'>') {
+                    push(&mut tokens, TokenKind::Arrow, &mut i, 2);
+                } else {
+                    push(&mut tokens, TokenKind::Minus, &mut i, 1);
+                }
+            }
             '*' => push(&mut tokens, TokenKind::Star, &mut i, 1),
             '/' => push(&mut tokens, TokenKind::Slash, &mut i, 1),
             '%' => push(&mut tokens, TokenKind::Percent, &mut i, 1),
@@ -158,6 +168,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     "while" => TokenKind::While,
                     "true" => TokenKind::True,
                     "false" => TokenKind::False,
+                    "return" => TokenKind::Return,
                     _ => TokenKind::Ident(text.to_string()),
                 };
                 tokens.push(Token {

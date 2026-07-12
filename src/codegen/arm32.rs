@@ -2,7 +2,8 @@
 //!
 //! Emits GNU-assembler syntax targeting `arm-linux-gnueabihf`. Syscalls use
 //! the standard EABI convention: syscall number in `r7`, up to 6 arguments
-//! in `r0`-`r5`, trapped with `svc #0`.
+//! in `r0`-`r5`, trapped with `svc #0`. Function calls follow AAPCS: up to
+//! 4 integer arguments in `r0`-`r3`, return value in `r0`.
 //!
 //! Runtime expressions are evaluated with a simple stack machine: every
 //! `emit_expr` call leaves its result on top of the stack. This is not
@@ -24,6 +25,7 @@ impl Backend for Arm32Backend {
         let mut emitter = Emitter {
             out: String::new(),
             label_counter: 0,
+            return_label: None,
         };
 
         emitter.out.push_str(".global _start\n");
@@ -37,12 +39,20 @@ impl Backend for Arm32Backend {
     }
 }
 
+/// `main` is the process entry point (`_start`), not something anyone
+/// calls - it never returns, so it gets no `push {fp, lr}` / epilogue,
+/// unlike ordinary functions.
+fn label_for(name: &str) -> &str {
+    if name == "main" { "_start" } else { name }
+}
+
 /// Bundles the output buffer with a monotonic counter for generating
-/// unique, deterministic labels (`.Lif_end0`, `.Lwhile_start1`, ...) as
-/// `if`/`while` are walked.
+/// unique, deterministic labels (`.Lif_end0`, `.Lwhile_start1`, ...), plus
+/// the current function's epilogue label for `return` to jump to.
 struct Emitter {
     out: String,
     label_counter: usize,
+    return_label: Option<String>,
 }
 
 impl Emitter {
@@ -53,21 +63,42 @@ impl Emitter {
     }
 
     fn emit_function(&mut self, function: &CheckedFunction) {
-        let label = if function.name == "main" {
-            "_start"
-        } else {
-            &function.name
-        };
-        self.out.push_str(&format!("{}:\n", label));
+        let is_entry = function.name == "main";
+        self.out
+            .push_str(&format!("{}:\n", label_for(&function.name)));
 
-        if function.frame_size > 0 {
-            let aligned = (function.frame_size + 7) & !7;
+        if is_entry {
+            if function.frame_size > 0 {
+                let aligned = (function.frame_size + 7) & !7;
+                self.out.push_str("\tmov fp, sp\n");
+                self.out.push_str(&format!("\tsub sp, sp, #{}\n", aligned));
+            }
+            self.return_label = None;
+        } else {
+            self.out.push_str("\tpush {fp, lr}\n");
             self.out.push_str("\tmov fp, sp\n");
-            self.out.push_str(&format!("\tsub sp, sp, #{}\n", aligned));
+            if function.frame_size > 0 {
+                let aligned = (function.frame_size + 7) & !7;
+                self.out.push_str(&format!("\tsub sp, sp, #{}\n", aligned));
+            }
+            self.return_label = Some(format!(".Lret_{}", function.name));
+        }
+
+        let arg_regs = ["r0", "r1", "r2", "r3"];
+        for (reg, offset) in arg_regs.iter().zip(&function.param_offsets) {
+            self.out
+                .push_str(&format!("\tstr {}, [fp, #-{}]\n", reg, offset));
         }
 
         for stmt in &function.body {
             self.emit_stmt(stmt);
+        }
+
+        if let Some(label) = self.return_label.clone() {
+            self.out.push_str(&format!("{}:\n", label));
+            self.out.push_str("\tmov sp, fp\n");
+            self.out.push_str("\tpop {fp, lr}\n");
+            self.out.push_str("\tbx lr\n");
         }
     }
 
@@ -133,6 +164,18 @@ impl Emitter {
 
                 self.out.push_str(&format!("\tb {}\n", start_label));
                 self.out.push_str(&format!("{}:\n", end_label));
+            }
+
+            CheckedStmt::Return(value) => {
+                if let Some(value) = value {
+                    self.emit_expr(value);
+                    self.out.push_str("\tpop {r0}\n");
+                }
+                let label = self
+                    .return_label
+                    .clone()
+                    .expect("'return' should only appear inside a function body");
+                self.out.push_str(&format!("\tb {}\n", label));
             }
         }
     }
@@ -207,6 +250,17 @@ impl Emitter {
                 self.out.push_str("\tpop {r0}\n");
                 self.out.push_str("\tpop {r7}\n");
                 self.out.push_str("\tsvc #0\n");
+                self.out.push_str("\tpush {r0}\n");
+            }
+
+            CheckedExpr::Call { name, args } => {
+                for arg in args {
+                    self.emit_expr(arg);
+                }
+                for i in (0..args.len()).rev() {
+                    self.out.push_str(&format!("\tpop {{r{}}}\n", i));
+                }
+                self.out.push_str(&format!("\tbl {}\n", label_for(name)));
                 self.out.push_str("\tpush {r0}\n");
             }
         }

@@ -1,0 +1,16 @@
+// This example demonstrates arithmetic folding in Comfy. The compiler will evaluate
+// constant expressions at compile time, resulting in a more efficient program.
+//
+// In this example, the expression `a * 4 + b` is folded to `43`, and the expression
+// `-(a - b * 3)` is folded to `-1`. The exit code is truncated to a
+// byte, so the program will exit with code `43` (0x2B) and the
+// negated value will be truncated to `255` (0xFF)
+
+fn main() {
+    let a = 10;
+    let b = 3;
+    let code = a * 4 + b; // folds to 43
+    let neg = -(a - b * 3); // folds to -1 -> -1 as an i64, exit code truncates to a byte
+
+    $syscall(1, code, 0, 0, 0, 0, 0); // exit with code 43
+}

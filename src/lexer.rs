@@ -5,6 +5,7 @@ use crate::diag::{Diagnostic, Span};
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Fn,
+    Let,
     Ident(String),
     Int(i64),
     /// A `$name` intrinsic, e.g. `$syscall`.
@@ -16,6 +17,7 @@ pub enum TokenKind {
     RBrace,
     Comma,
     Semicolon,
+    Equals,
 
     Eof,
 }
@@ -51,6 +53,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             '}' => push(&mut tokens, TokenKind::RBrace, &mut i, 1),
             ',' => push(&mut tokens, TokenKind::Comma, &mut i, 1),
             ';' => push(&mut tokens, TokenKind::Semicolon, &mut i, 1),
+            '=' => push(&mut tokens, TokenKind::Equals, &mut i, 1),
 
             '$' => {
                 let start = i;
@@ -84,7 +87,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                         Span::new(start, i),
                     )
                 })?;
-                tokens.push(Token { kind: TokenKind::Int(value), span: Span::new(start, i) });
+                tokens.push(Token {
+                    kind: TokenKind::Int(value),
+                    span: Span::new(start, i),
+                });
             }
 
             c if c.is_ascii_digit() => {
@@ -99,7 +105,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                         Span::new(start, i),
                     )
                 })?;
-                tokens.push(Token { kind: TokenKind::Int(value), span: Span::new(start, i) });
+                tokens.push(Token {
+                    kind: TokenKind::Int(value),
+                    span: Span::new(start, i),
+                });
             }
 
             c if is_ident_start(c) => {
@@ -110,9 +119,13 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 let text = &source[start..i];
                 let kind = match text {
                     "fn" => TokenKind::Fn,
+                    "let" => TokenKind::Let,
                     _ => TokenKind::Ident(text.to_string()),
                 };
-                tokens.push(Token { kind, span: Span::new(start, i) });
+                tokens.push(Token {
+                    kind,
+                    span: Span::new(start, i),
+                });
             }
 
             other => {
@@ -124,14 +137,20 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         }
     }
 
-    tokens.push(Token { kind: TokenKind::Eof, span: Span::new(source.len(), source.len()) });
+    tokens.push(Token {
+        kind: TokenKind::Eof,
+        span: Span::new(source.len(), source.len()),
+    });
     Ok(tokens)
 }
 
 fn push(tokens: &mut Vec<Token>, kind: TokenKind, i: &mut usize, len: usize) {
     let start = *i;
     *i += len;
-    tokens.push(Token { kind, span: Span::new(start, *i) });
+    tokens.push(Token {
+        kind,
+        span: Span::new(start, *i),
+    });
 }
 
 fn is_ident_start(c: char) -> bool {

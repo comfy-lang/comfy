@@ -4,7 +4,7 @@
 //! declarations and `$syscall(...)` statements. Expressions are still just
 //! atoms (int literals or identifiers) - arithmetic comes in a later step.
 
-use crate::ast::{Expr, FunctionDef, Program, Stmt};
+use crate::ast::{BinOp, Expr, FunctionDef, Program, Stmt, UnaryOp};
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
 
@@ -150,6 +150,63 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, Diagnostic> {
+        self.parse_binary(0)
+    }
+
+    /// Precedence climbing: consumes a unary term, then repeatedly folds in
+    /// any following binary operator whose precedence is >= `min_prec`.
+    fn parse_binary(&mut self, min_prec: u8) -> Result<Expr, Diagnostic> {
+        let mut lhs = self.parse_unary()?;
+
+        while let Some((op, prec)) = self.peek_binop() {
+            if prec < min_prec {
+                break;
+            }
+            self.advance(); // consume the operator token
+
+            // `prec + 1` (not `prec`) makes this left-associative: it stops
+            // the recursive call from swallowing another operator of the
+            // *same* precedence, leaving it for this loop to pick up next.
+            let rhs = self.parse_binary(prec + 1)?;
+            let span = lhs.span().to(rhs.span());
+            lhs = Expr::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            };
+        }
+
+        Ok(lhs)
+    }
+
+    fn peek_binop(&self) -> Option<(BinOp, u8)> {
+        match self.current().kind {
+            TokenKind::Plus => Some((BinOp::Add, 1)),
+            TokenKind::Minus => Some((BinOp::Sub, 1)),
+            TokenKind::Star => Some((BinOp::Mul, 2)),
+            TokenKind::Slash => Some((BinOp::Div, 2)),
+            TokenKind::Percent => Some((BinOp::Rem, 2)),
+            _ => None,
+        }
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
+        if self.at(&TokenKind::Minus) {
+            let start = self.span();
+            self.advance();
+            let operand = self.parse_unary()?; // recurse: allows `--x`, harmless
+            let span = start.to(operand.span());
+            return Ok(Expr::Unary {
+                op: UnaryOp::Neg,
+                operand: Box::new(operand),
+                span,
+            });
+        }
+        self.parse_primary()
+    }
+
+    fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         let span = self.span();
         match &self.current().kind {
             TokenKind::Int(value) => {
@@ -161,6 +218,12 @@ impl<'a> Parser<'a> {
                 let name = name.clone();
                 self.advance();
                 Ok(Expr::Ident(name, span))
+            }
+            TokenKind::LParen => {
+                self.advance();
+                let inner = self.parse_expr()?;
+                self.expect(&TokenKind::RParen)?;
+                Ok(inner)
             }
             other => Err(Diagnostic::error(
                 format!("expected an expression, found {:?}", other),

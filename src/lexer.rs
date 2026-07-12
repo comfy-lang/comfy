@@ -18,6 +18,11 @@ pub enum TokenKind {
     Comma,
     Semicolon,
     Equals,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
 
     Eof,
 }
@@ -54,6 +59,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ',' => push(&mut tokens, TokenKind::Comma, &mut i, 1),
             ';' => push(&mut tokens, TokenKind::Semicolon, &mut i, 1),
             '=' => push(&mut tokens, TokenKind::Equals, &mut i, 1),
+            '+' => push(&mut tokens, TokenKind::Plus, &mut i, 1),
+            '-' => push(&mut tokens, TokenKind::Minus, &mut i, 1),
+            '*' => push(&mut tokens, TokenKind::Star, &mut i, 1),
+            '/' => push(&mut tokens, TokenKind::Slash, &mut i, 1),
+            '%' => push(&mut tokens, TokenKind::Percent, &mut i, 1),
 
             '$' => {
                 let start = i;
@@ -70,25 +80,6 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
                 tokens.push(Token {
                     kind: TokenKind::Intrinsic(source[name_start..i].to_string()),
-                    span: Span::new(start, i),
-                });
-            }
-
-            '-' if bytes.get(i + 1).is_some_and(|b| b.is_ascii_digit()) => {
-                let start = i;
-                i += 1;
-                while i < bytes.len() && (bytes[i] as char).is_ascii_digit() {
-                    i += 1;
-                }
-                let text = &source[start..i];
-                let value = text.parse::<i64>().map_err(|_| {
-                    Diagnostic::error(
-                        format!("invalid integer literal '{}'", text),
-                        Span::new(start, i),
-                    )
-                })?;
-                tokens.push(Token {
-                    kind: TokenKind::Int(value),
                     span: Span::new(start, i),
                 });
             }

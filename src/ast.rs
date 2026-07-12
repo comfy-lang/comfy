@@ -2,14 +2,47 @@
 
 use crate::diag::Span;
 
-pub struct Program {
-    pub functions: Vec<FunctionDef>,
+#[derive(Clone, Copy)]
+pub enum UnaryOp {
+    Neg, // -x
 }
 
-pub struct FunctionDef {
-    pub name: String,
-    pub body: Vec<Stmt>,
-    pub span: Span,
+#[derive(Clone, Copy)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+}
+
+/// An expression that (for now) only ever appears where a constant value
+/// is expected: a `let` initializer, or a `$syscall` argument.
+pub enum Expr {
+    IntLit(i64, Span),
+    Ident(String, Span),
+    Unary {
+        op: UnaryOp,
+        operand: Box<Expr>,
+        span: Span,
+    },
+    Binary {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        span: Span,
+    },
+}
+
+impl Expr {
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::IntLit(_, span) => *span,
+            Expr::Ident(_, span) => *span,
+            Expr::Unary { span, .. } => *span,
+            Expr::Binary { span, .. } => *span,
+        }
+    }
 }
 
 pub enum Stmt {
@@ -29,18 +62,12 @@ pub enum Stmt {
     Syscall { args: [Expr; 7], span: Span },
 }
 
-/// An expression that (for now) only ever appears where a constant value
-/// is expected: a `let` initializer, or a `$syscall` argument.
-pub enum Expr {
-    IntLit(i64, Span),
-    Ident(String, Span),
+pub struct FunctionDef {
+    pub name: String,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
-impl Expr {
-    pub fn span(&self) -> Span {
-        match self {
-            Expr::IntLit(_, span) => *span,
-            Expr::Ident(_, span) => *span,
-        }
-    }
+pub struct Program {
+    pub functions: Vec<FunctionDef>,
 }

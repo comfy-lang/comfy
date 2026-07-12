@@ -2,7 +2,7 @@
 <img src="./assets/comfylang.png" alt="comfy logo">
 </center>
 
-**comfylang** is a low-level, statically-typed systems language, with the `comfy` compiler currently compiling straight to ARM32 assembly.
+**comfylang** is a low-level, statically-typed systems language, with the `comfyc` compiler currently compiling straight to ARM32 assembly.
 
 > **Status: full rewrite in progress.** The compiler is being rebuilt from scratch with a proper architecture (spanned lexer, real diagnostics, a type checker, an IR, and a pluggable backend trait) instead of the original direct AST-walking interpreter-style code generator. The language surface is intentionally minimal right now and will grow step by step. See "Roadmap" below.
 

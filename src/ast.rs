@@ -32,6 +32,10 @@ pub enum Expr {
         rhs: Box<Expr>,
         span: Span,
     },
+    Syscall {
+        args: Box<[Expr; 7]>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -41,6 +45,7 @@ impl Expr {
             Expr::Ident(_, span) => *span,
             Expr::Unary { span, .. } => *span,
             Expr::Binary { span, .. } => *span,
+            Expr::Syscall { span, .. } => *span,
         }
     }
 }
@@ -64,12 +69,10 @@ pub enum Stmt {
         span: Span,
     },
 
-    /// `$syscall(nr, a0, a1, a2, a3, a4, a5);`
-    ///
-    /// The sole compiler intrinsic today. Named syscall wrappers
-    /// (`write`, `read`, `exit`, ...) will be reintroduced later as
-    /// ordinary standard-library functions built on top of this.
-    Syscall { args: [Expr; 7], span: Span },
+    /// A bare expression used as a statement, e.g. `$syscall(...);` where
+    /// the result is discarded. Anything that isn't `let` or `NAME = ...`
+    /// ends up here.
+    Expr { value: Expr, span: Span },
 }
 
 pub struct FunctionDef {

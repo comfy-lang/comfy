@@ -72,11 +72,7 @@ impl<'a> Parser<'a> {
         match &self.current().kind {
             TokenKind::Let => self.parse_let_stmt(),
             TokenKind::Ident(_) => self.parse_assign_stmt(),
-            TokenKind::Intrinsic(_) => self.parse_syscall_stmt(),
-            _ => Err(Diagnostic::error(
-                format!("expected a statement, found {:?}", self.current().kind),
-                self.span(),
-            )),
+            _ => self.parse_expr_stmt(),
         }
     }
 
@@ -120,15 +116,18 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_syscall_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+    fn parse_expr_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.span();
+        let value = self.parse_expr()?;
+        let end = self.span();
+        self.expect(&TokenKind::Semicolon)?;
+        Ok(Stmt::Expr {
+            value,
+            span: start.to(end),
+        })
+    }
 
-        let name = match &self.current().kind {
-            TokenKind::Intrinsic(name) => name.clone(),
-            _ => unreachable!("caller already checked this is an intrinsic"),
-        };
-        self.advance();
-
+    fn parse_syscall_args(&mut self, name: String, start: Span) -> Result<Expr, Diagnostic> {
         if name != "syscall" {
             return Err(Diagnostic::error(
                 format!(
@@ -153,7 +152,6 @@ impl<'a> Parser<'a> {
 
         let end = self.span();
         self.expect(&TokenKind::RParen)?;
-        self.expect(&TokenKind::Semicolon)?;
 
         if args.len() != 7 {
             return Err(Diagnostic::error(
@@ -168,8 +166,8 @@ impl<'a> Parser<'a> {
         let args: [Expr; 7] = args
             .try_into()
             .unwrap_or_else(|_| unreachable!("length checked above"));
-        Ok(Stmt::Syscall {
-            args,
+        Ok(Expr::Syscall {
+            args: Box::new(args),
             span: start.to(end),
         })
     }
@@ -249,6 +247,11 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_expr()?;
                 self.expect(&TokenKind::RParen)?;
                 Ok(inner)
+            }
+            TokenKind::Intrinsic(name) => {
+                let name = name.clone();
+                self.advance();
+                self.parse_syscall_args(name, span)
             }
             other => Err(Diagnostic::error(
                 format!("expected an expression, found {:?}", other),

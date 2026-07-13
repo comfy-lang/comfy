@@ -4,8 +4,6 @@
 
 **comfylang** is a low-level, statically-typed systems language, with the `comfyc` compiler currently compiling straight to ARM32 assembly.
 
-> **Status: full rewrite in progress.** The compiler is being rebuilt from scratch with a proper architecture (spanned lexer, real diagnostics, a type checker, an IR, and a pluggable backend trait) instead of the original direct AST-walking interpreter-style code generator. The language surface is intentionally minimal right now and will grow step by step. See "Roadmap" below.
-
 ## Try it
 
 The dev environment is a [Nix flake](./flake.nix) providing the Rust toolchain, an ARM32 cross toolchain (assembler + linker), and `qemu-arm`, so you can build and run ARM32 binaries from any host architecture:

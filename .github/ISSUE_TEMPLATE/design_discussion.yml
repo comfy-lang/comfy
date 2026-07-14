@@ -1,0 +1,34 @@
+name: Language design discussion
+description: Open a discussion about syntax or semantics before anyone implements it
+labels: ["design-discussion", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for questions like "should comparisons chain?" or "how should structs
+        interact with pointers?" - things worth settling before writing code.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: The question
+      description: State the design question as precisely as you can.
+    validations:
+      required: true
+
+  - type: textarea
+    id: options
+    attributes:
+      label: Options considered
+      description: List the options you see, with tradeoffs. Code examples welcome.
+      render: rust
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: breaking
+    attributes:
+      label: Impact
+      options:
+        - label: This could be a breaking change to existing `.cfy` programs
+          required: false

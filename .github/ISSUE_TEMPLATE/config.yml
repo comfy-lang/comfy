@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Language design question
+    url: https://github.com/comfy-lang/comfy/discussions
+    about: For open-ended "how should this work?" questions, start a Discussion before filing a design-discussion issue.

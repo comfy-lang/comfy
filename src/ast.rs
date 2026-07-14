@@ -101,6 +101,16 @@ pub enum Expr {
         index: Box<Expr>,
         span: Span,
     },
+    StructLit {
+        name: String,
+        fields: Vec<(String, Expr)>,
+        span: Span,
+    },
+    Field {
+        base: Box<Expr>,
+        field: String,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -118,6 +128,8 @@ impl Expr {
             Expr::AddressOf { span, .. } => *span,
             Expr::ArrayLit { span, .. } => *span,
             Expr::Index { span, .. } => *span,
+            Expr::StructLit { span, .. } => *span,
+            Expr::Field { span, .. } => *span,
         }
     }
 }
@@ -126,6 +138,7 @@ pub enum AssignTarget {
     Name(String),
     Deref(Expr),
     Index { base: Expr, index: Expr },
+    Field { base: Expr, field: String },
 }
 
 pub enum Stmt {
@@ -197,6 +210,19 @@ pub struct FunctionDef {
     pub span: Span,
 }
 
+pub struct FieldDef {
+    pub name: String,
+    pub ty: TypeName,
+    pub span: Span,
+}
+
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<FieldDef>,
+    pub span: Span,
+}
+
 pub struct Program {
+    pub structs: Vec<StructDef>,
     pub functions: Vec<FunctionDef>,
 }

@@ -1,0 +1,139 @@
+# Label definitions for comfy-lang/comfy.
+# Synced automatically by .github/workflows/label-sync.yml via
+# https://github.com/crazy-max/ghaction-github-labeler
+
+- name: bug
+  color: d73a4a
+  description: Something doesn't compile or run correctly
+
+- name: enhancement
+  color: a2eeef
+  description: New feature or capability
+
+- name: refactor
+  color: cfd3d7
+  description: Internal cleanup, no behavior change
+
+- name: performance
+  color: fbca04
+  description: Compile-time or generated-code performance
+
+- name: documentation
+  color: "0075ca"
+  description: README, roadmap, code comments, or examples
+
+- name: question
+  color: d876e3
+  description: Usage or design question, not a confirmed bug
+
+- name: chore
+  color: ededed
+  description: Dependencies, CI, tooling, or repo maintenance
+
+- name: tests
+  color: c5def5
+  description: Test coverage or missing regression tests
+
+- name: "area: lexer"
+  color: "5319e7"
+  description: Tokenizer / lexical analysis
+
+- name: "area: parser"
+  color: "5319e7"
+  description: Grammar, parsing, AST construction
+
+- name: "area: type-checker"
+  color: "5319e7"
+  description: Type checking and inference
+
+- name: "area: codegen-arm32"
+  color: "5319e7"
+  description: ARM32 assembly codegen backend
+
+- name: "area: codegen-x86"
+  color: "5319e7"
+  description: Future x86_64 backend (via the Backend trait)
+
+- name: "area: ir"
+  color: "5319e7"
+  description: Intermediate representation and optimization passes
+
+- name: "area: structs"
+  color: "5319e7"
+  description: Struct types and related codegen
+
+- name: "area: stdlib"
+  color: "5319e7"
+  description: Standard library (syscalls wrappers, etc.)
+
+- name: "area: package-manager"
+  color: "5319e7"
+  description: Future comfy package/dependency manager
+
+- name: "area: diagnostics"
+  color: "5319e7"
+  description: Compiler error messages, spans, and reporting
+
+- name: "area: build/ci"
+  color: "5319e7"
+  description: Nix flake, cross toolchain, GitHub Actions
+
+- name: design-discussion
+  color: d4c5f9
+  description: Open question about syntax or semantics before implementing
+
+- name: breaking-change
+  color: e99695
+  description: Changes existing .cfy syntax or behavior
+
+- name: spec
+  color: bfd4f2
+  description: Formalizing language grammar/rules
+
+- name: good first issue
+  color: "7057ff"
+  description: Small, well-scoped issue, good for newcomers
+
+- name: help wanted
+  color: "008672"
+  description: Maintainers are looking for outside help
+
+- name: needs-triage
+  color: ededed
+  description: New issue, not yet reviewed by a maintainer
+
+- name: needs-repro
+  color: e4e669
+  description: Bug report is missing a minimal reproduction
+
+- name: blocked
+  color: b60205
+  description: Waiting on another issue, PR, or roadmap step
+
+- name: duplicate
+  color: cfd3d7
+  description: This issue or PR already exists
+
+- name: wontfix
+  color: ffffff
+  description: This will not be worked on
+
+- name: invalid
+  color: e4e669
+  description: This doesn't seem right
+
+- name: stale
+  color: eeeeee
+  description: No activity for a long time
+
+- name: needs-review
+  color: fbca04
+  description: Ready for a maintainer to review
+
+- name: changes-requested
+  color: e99695
+  description: Reviewer requested changes
+
+- name: ready-to-merge
+  color: "0e8a16"
+  description: Approved and passing CI

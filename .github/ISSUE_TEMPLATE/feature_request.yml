@@ -1,0 +1,54 @@
+name: Feature request / language proposal
+description: Propose a new language feature, syntax, or compiler capability
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This template is for both compiler features
+        and new `.cfy` language syntax/semantics.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve, or what can't you currently express in comfylang?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed syntax/behavior
+      description: Sketch the syntax or API you have in mind, with a short `.cfy` example if applicable.
+      render: rust
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you considered and why you didn't prefer them.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Lexer
+        - Parser
+        - Type checker
+        - Codegen (ARM32)
+        - Codegen (x86_64)
+        - IR
+        - Structs
+        - Stdlib
+        - Package manager
+        - Diagnostics
+        - Not sure
+    validations:
+      required: false

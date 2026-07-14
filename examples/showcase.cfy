@@ -1,0 +1,32 @@
+fn factorial(n: int) -> int {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+fn sum_up_to(n: int, out: *int) {
+    let mut i = 1;
+    let mut total = 0;
+    while i <= n {
+        total = total + i;
+        i = i + 1;
+    }
+    *out = total;
+}
+
+fn main() {
+    let mut sum = 0;
+    sum_up_to(5, &sum); // sum = 1+2+3+4+5 = 15
+
+    let fact = factorial(4);
+
+    let mut code = 0;
+    if sum > 10 && fact >= 20 {
+        code = sum + fact; // 39
+    } else if sum == 0 || !(fact < 0) {
+        code = 1;
+    }
+
+    $syscall(1, code, 0, 0, 0, 0, 0); // exit 39
+}

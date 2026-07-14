@@ -29,11 +29,7 @@ util/run.sh examples/exit_code.cfy
 `fn main()` plus any number of user-defined functions, with variables, arithmetic, comparisons, `if`/`else`/`while`, and syscalls:
 
 ```rust
-// examples/functions/basic_math.cfy
-fn add(a: int, b: int) -> int {
-    return a + b;
-}
-
+// examples/showcase.cfy
 fn factorial(n: int) -> int {
     if n <= 1 {
         return 1;
@@ -41,19 +37,40 @@ fn factorial(n: int) -> int {
     return n * factorial(n - 1);
 }
 
+fn sum_up_to(n: int, out: *int) {
+    let mut i = 1;
+    let mut total = 0;
+    while i <= n {
+        total = total + i;
+        i = i + 1;
+    }
+    *out = total;
+}
+
 fn main() {
-    let mut sum = add(2, 3);
-    let mut fact = factorial(5);
-    $syscall(1, sum + fact, 0, 0, 0, 0, 0); // exit 125
+    let mut sum = 0;
+    sum_up_to(5, &sum); // sum = 1+2+3+4+5 = 15
+
+    let fact = factorial(4); // 24
+
+    let mut code = 0;
+    if sum > 10 && fact >= 20 {
+        code = sum + fact; // 39
+    } else if sum == 0 || !(fact < 0) {
+        code = 1;
+    }
+
+    $syscall(1, code, 0, 0, 0, 0, 0); // exit 39
 }
 ```
 
-- `let NAME = expr;` is a compile-time constant, folded away entirely - it costs nothing at runtime, and must be provable at compile time.
-- `let mut NAME = expr;` is a real, stack-allocated local that can be reassigned with `NAME = expr;`.
+- `let NAME = expr;` is an immutable binding. When `expr` is provably constant it's folded away entirely (zero runtime cost); otherwise it falls back to a real, immutable stack slot. `let mut NAME = expr;` is always a real stack-allocated local that can be reassigned with `NAME = expr;`.
 - Arithmetic (`+ - * / %`, unary `-`) is constant-folded when possible; runtime arithmetic falls back to a simple stack-machine codegen. Runtime (non-constant) `/` and `%` aren't supported yet - arm32 has no hardware divide instruction and the compiler is `-nostdlib`, so it can't call into libgcc for a software fallback.
 - Comparisons (`== != < <= > >=`) produce a real `bool`, and can't be chained (`a < b < c` doesn't parse). `if`/`while` conditions must be `bool`; comfy does not implicitly convert integers to booleans.
 - Functions take typed parameters (`int`/`bool` so far) and an optional `-> Type` return; omitting it means the function returns `()`. Functions must end with a `return` statement if they return a value. Calls follow the AAPCS calling convention (up to 4 arguments in `r0`-`r3`, return value in `r0`) and recursion works.
 - `$syscall(nr, a0, a1, a2, a3, a4, a5)` is the sole compiler intrinsic, usable as a statement or an expression (its return value, from `r0`, can be captured). It maps directly onto the Linux ARM EABI syscall convention. Named wrappers like `write`/`read`/`exit` will come back as ordinary standard-library functions built on top of this, once comfylang has a standard library.
+- `*T` is a pointer to `T` (recursive, e.g. `**T`). `&x` takes the address of a local (only bare identifiers so far); `*p` dereferences, and works both to read (`let y = *p;`) and, as the direct target of `=`, to write (`*p = v;`). `$syscall` arguments may be pointers as well as integers, for passing buffer addresses.
+
 
 More examples in [`examples/`](./examples).
 
@@ -75,6 +92,8 @@ Planned, in rough order:
 4. ~~Control flow (`if`/`else`, `while`)~~ ✅
 5. ~~Logical operators (`&&`, `||`, `!`) with short-circuit evaluation~~ ✅
 6. ~~User-defined functions, calling convention, recursion~~ ✅
-7. Pointers, arrays, `struct`s
-8. IR + optimization passes
-9. Additional backends (x86_64, ...), standard library, self-hosting prep
+7. ~~Pointers (`*T`, `&x`, `*p`)~~ ✅
+8. Arrays (`[T; N]`, indexing)
+9. `struct`s
+10. IR + optimization passes
+11. Additional backends (x86_64, ...), standard library, self-hosting prep

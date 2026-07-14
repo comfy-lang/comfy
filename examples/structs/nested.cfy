@@ -1,0 +1,22 @@
+struct Point {
+    x: int,
+    y: int,
+}
+
+struct Rect {
+    origin: Point,
+    size: Point,
+}
+
+fn main() {
+    let mut r = Rect {
+        origin: Point { x: 1, y: 2 },
+        size: Point { x: 10, y: 20 },
+    };
+
+    r.origin.x = r.origin.x + 4; // 5
+    r.size.y = r.size.y - 5;     // 15
+
+    let code = r.origin.x + r.origin.y + r.size.x + r.size.y; // 5+2+10+15 = 32
+    $syscall(1, code, 0, 0, 0, 0, 0); // exit 32
+}

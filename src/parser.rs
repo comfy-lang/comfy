@@ -1,25 +1,36 @@
 use crate::ast::{
-    AssignTarget, BinOp, CompareOp, Expr, FunctionDef, LogicalOp, Param, Program, Stmt, TypeName,
-    UnaryOp,
+    AssignTarget, BinOp, CompareOp, Expr, FieldDef, FunctionDef, LogicalOp, Param, Program, Stmt,
+    StructDef, TypeName, UnaryOp,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
 
 pub fn parse(tokens: &[Token]) -> Result<Program, Diagnostic> {
-    Parser { tokens, pos: 0 }.parse_program()
+    Parser {
+        tokens,
+        pos: 0,
+        no_struct_literal: false,
+    }
+    .parse_program()
 }
 
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    no_struct_literal: bool,
 }
 
 impl<'a> Parser<'a> {
     fn parse_program(&mut self) -> Result<Program, Diagnostic> {
+        let mut structs = Vec::new();
         let mut functions = Vec::new();
 
         while !self.at(&TokenKind::Eof) {
-            functions.push(self.parse_function()?);
+            if self.at(&TokenKind::Struct) {
+                structs.push(self.parse_struct_def()?);
+            } else {
+                functions.push(self.parse_function()?);
+            }
         }
 
         if functions.is_empty() {
@@ -29,7 +40,36 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        Ok(Program { functions })
+        Ok(Program { structs, functions })
+    }
+
+    /// Runs `f` with bare struct literals forbidden - used while parsing an
+    /// `if`/`while` condition, since `if p == Point { ... }` would otherwise
+    /// be ambiguous with the following block.
+    fn disallowing_struct_literal<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, Diagnostic>,
+    ) -> Result<T, Diagnostic> {
+        let previous = self.no_struct_literal;
+        self.no_struct_literal = true;
+        let result = f(self);
+        self.no_struct_literal = previous;
+        result
+    }
+
+    /// Runs `f` with the restriction lifted again - used whenever we enter
+    /// an unambiguous bracketed/parenthesized sub-context (so struct
+    /// literals still work *inside* parens/calls/brackets even within an
+    /// `if`/`while` condition).
+    fn allowing_struct_literal<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, Diagnostic>,
+    ) -> Result<T, Diagnostic> {
+        let previous = self.no_struct_literal;
+        self.no_struct_literal = false;
+        let result = f(self);
+        self.no_struct_literal = previous;
+        result
     }
 
     fn parse_function(&mut self) -> Result<FunctionDef, Diagnostic> {
@@ -64,6 +104,41 @@ impl<'a> Parser<'a> {
             params,
             return_type,
             body,
+            span: start.to(end),
+        })
+    }
+
+    fn parse_struct_def(&mut self) -> Result<StructDef, Diagnostic> {
+        let start = self.span();
+        self.expect(&TokenKind::Struct)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LBrace)?;
+
+        let mut fields = Vec::new();
+        while !self.at(&TokenKind::RBrace) {
+            let field_start = self.span();
+            let field_name = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            let ty = self.parse_type_name()?;
+            let field_end = ty.span();
+            fields.push(FieldDef {
+                name: field_name,
+                ty,
+                span: field_start.to(field_end),
+            });
+            if self.at(&TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let end = self.span();
+        self.expect(&TokenKind::RBrace)?;
+
+        Ok(StructDef {
+            name,
+            fields,
             span: start.to(end),
         })
     }
@@ -204,6 +279,7 @@ impl<'a> Parser<'a> {
                 base: *base,
                 index: *index,
             }),
+            Expr::Field { base, field, .. } => Ok(AssignTarget::Field { base: *base, field }),
             other => {
                 let span = other.span();
                 Err(Diagnostic::error("invalid assignment target", span))
@@ -214,7 +290,7 @@ impl<'a> Parser<'a> {
     fn parse_if_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.span();
         self.expect(&TokenKind::If)?;
-        let cond = self.parse_expr()?;
+        let cond = self.disallowing_struct_literal(|p| p.parse_expr())?;
         let (then_body, mut end) = self.parse_block()?;
 
         let else_body = if self.at(&TokenKind::Else) {
@@ -243,7 +319,7 @@ impl<'a> Parser<'a> {
     fn parse_while_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.span();
         self.expect(&TokenKind::While)?;
-        let cond = self.parse_expr()?;
+        let cond = self.disallowing_struct_literal(|p| p.parse_expr())?;
         let (body, end) = self.parse_block()?;
 
         Ok(Stmt::While {
@@ -287,7 +363,7 @@ impl<'a> Parser<'a> {
 
         let mut args = Vec::new();
         while !self.at(&TokenKind::RParen) {
-            args.push(self.parse_expr()?);
+            args.push(self.allowing_struct_literal(|p| p.parse_expr())?);
             if self.at(&TokenKind::Comma) {
                 self.advance();
             } else {
@@ -468,22 +544,33 @@ impl<'a> Parser<'a> {
         self.parse_postfix()
     }
 
-    /// Consumes a primary expression, then repeatedly folds in any
-    /// following `[index]` - e.g. `arr[i]`, or (once nested arrays exist)
-    /// `arr[i][j]`.
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.parse_primary()?;
-        while self.at(&TokenKind::LBracket) {
-            let start = expr.span();
-            self.advance();
-            let index = self.parse_expr()?;
-            let end = self.span();
-            self.expect(&TokenKind::RBracket)?;
-            expr = Expr::Index {
-                base: Box::new(expr),
-                index: Box::new(index),
-                span: start.to(end),
-            };
+        loop {
+            if self.at(&TokenKind::LBracket) {
+                let start = expr.span();
+                self.advance();
+                let index = self.allowing_struct_literal(|p| p.parse_expr())?;
+                let end = self.span();
+                self.expect(&TokenKind::RBracket)?;
+                expr = Expr::Index {
+                    base: Box::new(expr),
+                    index: Box::new(index),
+                    span: start.to(end),
+                };
+            } else if self.at(&TokenKind::Dot) {
+                let start = expr.span();
+                self.advance();
+                let field_span = self.span();
+                let field = self.expect_ident()?;
+                expr = Expr::Field {
+                    base: Box::new(expr),
+                    field,
+                    span: start.to(field_span),
+                };
+            } else {
+                break;
+            }
         }
         Ok(expr)
     }
@@ -501,13 +588,15 @@ impl<'a> Parser<'a> {
                 self.advance();
                 if self.at(&TokenKind::LParen) {
                     self.parse_call_args(name, span)
+                } else if self.at(&TokenKind::LBrace) && !self.no_struct_literal {
+                    self.parse_struct_lit(name, span)
                 } else {
                     Ok(Expr::Ident(name, span))
                 }
             }
             TokenKind::LParen => {
                 self.advance();
-                let inner = self.parse_expr()?;
+                let inner = self.allowing_struct_literal(|p| p.parse_expr())?;
                 self.expect(&TokenKind::RParen)?;
                 Ok(inner)
             }
@@ -515,7 +604,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let mut elements = Vec::new();
                 while !self.at(&TokenKind::RBracket) {
-                    elements.push(self.parse_expr()?);
+                    elements.push(self.allowing_struct_literal(|p| p.parse_expr())?);
                     if self.at(&TokenKind::Comma) {
                         self.advance();
                     } else {
@@ -562,7 +651,7 @@ impl<'a> Parser<'a> {
 
         let mut args = Vec::new();
         while !self.at(&TokenKind::RParen) {
-            args.push(self.parse_expr()?);
+            args.push(self.allowing_struct_literal(|p| p.parse_expr())?);
             if self.at(&TokenKind::Comma) {
                 self.advance();
             } else {
@@ -576,6 +665,32 @@ impl<'a> Parser<'a> {
         Ok(Expr::Call {
             name,
             args,
+            span: start.to(end),
+        })
+    }
+
+    fn parse_struct_lit(&mut self, name: String, start: Span) -> Result<Expr, Diagnostic> {
+        self.expect(&TokenKind::LBrace)?;
+
+        let mut fields = Vec::new();
+        while !self.at(&TokenKind::RBrace) {
+            let field_name = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            let value = self.allowing_struct_literal(|p| p.parse_expr())?;
+            fields.push((field_name, value));
+            if self.at(&TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let end = self.span();
+        self.expect(&TokenKind::RBrace)?;
+
+        Ok(Expr::StructLit {
+            name,
+            fields,
             span: start.to(end),
         })
     }

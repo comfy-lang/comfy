@@ -5,6 +5,7 @@ use crate::diag::{Diagnostic, Span};
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Fn,
+    Struct,
     Let,
     Mut,
     If,
@@ -187,6 +188,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 let text = &source[start..i];
                 let kind = match text {
                     "fn" => TokenKind::Fn,
+                    "struct" => TokenKind::Struct,
                     "let" => TokenKind::Let,
                     "mut" => TokenKind::Mut,
                     "if" => TokenKind::If,

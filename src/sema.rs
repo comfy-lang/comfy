@@ -16,6 +16,7 @@ pub enum Ty {
     Unit,
     Pointer(Box<Ty>),
     Array(Box<Ty>, u32),
+    Struct(String),
 }
 
 impl std::fmt::Display for Ty {
@@ -26,33 +27,291 @@ impl std::fmt::Display for Ty {
             Ty::Unit => write!(f, "()"),
             Ty::Pointer(inner) => write!(f, "*{}", inner),
             Ty::Array(elem, len) => write!(f, "[{}; {}]", elem, len),
+            Ty::Struct(name) => write!(f, "{}", name),
         }
     }
 }
 
-fn resolve_type(ty: &ast::TypeName) -> Result<Ty, Diagnostic> {
+fn resolve_type(
+    ty: &ast::TypeName,
+    struct_names: &std::collections::HashSet<String>,
+) -> Result<Ty, Diagnostic> {
     match ty {
         ast::TypeName::Named(name, span) => match name.as_str() {
             "int" => Ok(Ty::Int),
             "bool" => Ok(Ty::Bool),
+            other if struct_names.contains(other) => Ok(Ty::Struct(other.to_string())),
             other => Err(Diagnostic::error(
                 format!("unknown type '{}'", other),
                 *span,
             )),
         },
-        ast::TypeName::Pointer(inner, _) => Ok(Ty::Pointer(Box::new(resolve_type(inner)?))),
-        ast::TypeName::Array(elem, len, _) => Ok(Ty::Array(Box::new(resolve_type(elem)?), *len)),
+        ast::TypeName::Pointer(inner, _) => {
+            Ok(Ty::Pointer(Box::new(resolve_type(inner, struct_names)?)))
+        }
+        ast::TypeName::Array(elem, len, _) => {
+            Ok(Ty::Array(Box::new(resolve_type(elem, struct_names)?), *len))
+        }
     }
 }
 
-/// Size of a value of this type, in bytes. Everything is word-sized so far
-/// except arrays, which are as big as their element type times their length.
-fn size_of(ty: &Ty) -> usize {
+/// Resolves an expression that denotes an addressable "place" - a plain
+/// local variable, or a chain of field accesses off one - to its absolute
+/// stack offset, type, and whether the underlying variable is `mut`.
+/// Index expressions aren't handled here yet (`arr[i].field` is a
+/// follow-up), so this only covers `name` and `name.a.b.c` chains.
+fn resolve_place(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(usize, Ty, bool), Diagnostic> {
+    match expr {
+        ast::Expr::Ident(name, span) => match ctx.symbols.get(name) {
+            Some(Symbol::Local(offset, ty, mutable)) => Ok((*offset, ty.clone(), *mutable)),
+            Some(Symbol::Const(_, _)) => Err(Diagnostic::error(
+                format!(
+                    "'{}' is a compile-time constant with no memory location; use 'let mut' instead",
+                    name
+                ),
+                *span,
+            )),
+            None => Err(Diagnostic::error(
+                format!("undefined name '{}'", name),
+                *span,
+            )),
+        },
+
+        ast::Expr::Field { base, field, span } => {
+            let (base_offset, base_ty, mutable) = resolve_place(base, ctx)?;
+            match base_ty {
+                Ty::Struct(struct_name) => {
+                    let info = &ctx.structs[&struct_name];
+                    let (_, field_ty, field_offset) = info
+                        .fields
+                        .iter()
+                        .find(|(n, _, _)| n == field)
+                        .ok_or_else(|| {
+                            Diagnostic::error(
+                                format!("struct '{}' has no field '{}'", struct_name, field),
+                                *span,
+                            )
+                        })?;
+                    Ok((base_offset + *field_offset, field_ty.clone(), mutable))
+                }
+                other => Err(Diagnostic::error(
+                    format!("cannot access field '{}' on a '{}'", field, other),
+                    *span,
+                )),
+            }
+        }
+
+        other => Err(Diagnostic::error(
+            "only a plain variable or a chain of field accesses is supported here right now",
+            other.span(),
+        )),
+    }
+}
+
+/// Lowers an array or struct literal that's the direct initializer of a
+/// `let`, flattening it into `Store`s at `base_offset + <field/element
+/// offset>`. We have no runtime representation of a whole array/struct
+/// *value* yet - only places (memory locations) for them - so this only
+/// ever runs at the top of a `let`, recursing into nested composites.
+fn lower_composite_literal(
+    expr: &ast::Expr,
+    base_offset: usize,
+    ctx: &Ctx<'_>,
+    body: &mut Vec<CheckedStmt>,
+) -> Result<Ty, Diagnostic> {
+    match expr {
+        ast::Expr::ArrayLit { elements, span } => {
+            let mut checked_elements = Vec::with_capacity(elements.len());
+            let mut elem_ty: Option<Ty> = None;
+            for el in elements {
+                let (checked, ty) = lower_expr(el, ctx)?;
+                match &elem_ty {
+                    None => elem_ty = Some(ty.clone()),
+                    Some(expected) if *expected != ty => {
+                        return Err(Diagnostic::error(
+                            format!(
+                                "array elements must all have the same type - expected '{}', found '{}'",
+                                expected, ty
+                            ),
+                            el.span(),
+                        ));
+                    }
+                    _ => {}
+                }
+                checked_elements.push(checked);
+            }
+            let elem_ty =
+                elem_ty.ok_or_else(|| Diagnostic::error("array literal cannot be empty", *span))?;
+            let len = checked_elements.len() as u32;
+            let elem_size = size_of(&elem_ty, ctx.structs);
+
+            for (i, elem_value) in checked_elements.into_iter().enumerate() {
+                body.push(CheckedStmt::Store {
+                    offset: base_offset + i * elem_size,
+                    value: elem_value,
+                });
+            }
+
+            Ok(Ty::Array(Box::new(elem_ty), len))
+        }
+
+        ast::Expr::StructLit { name, fields, span } => {
+            let info = ctx
+                .structs
+                .get(name)
+                .ok_or_else(|| Diagnostic::error(format!("unknown struct '{}'", name), *span))?;
+
+            let mut remaining: HashMap<&str, &ast::Expr> =
+                fields.iter().map(|(n, v)| (n.as_str(), v)).collect();
+            if remaining.len() != fields.len() {
+                return Err(Diagnostic::error(
+                    format!("duplicate field in struct literal for '{}'", name),
+                    *span,
+                ));
+            }
+
+            for (field_name, field_ty, field_offset) in &info.fields {
+                let value_expr = remaining.remove(field_name.as_str()).ok_or_else(|| {
+                    Diagnostic::error(
+                        format!(
+                            "missing field '{}' in literal for struct '{}'",
+                            field_name, name
+                        ),
+                        *span,
+                    )
+                })?;
+
+                let value_ty =
+                    lower_composite_literal(value_expr, base_offset + *field_offset, ctx, body)?;
+
+                if value_ty != *field_ty {
+                    return Err(Diagnostic::error(
+                        format!(
+                            "field '{}' of struct '{}' expects '{}', found '{}'",
+                            field_name, name, field_ty, value_ty
+                        ),
+                        value_expr.span(),
+                    ));
+                }
+            }
+
+            if let Some((extra_name, extra_expr)) = remaining.into_iter().next() {
+                return Err(Diagnostic::error(
+                    format!("struct '{}' has no field '{}'", name, extra_name),
+                    extra_expr.span(),
+                ));
+            }
+
+            Ok(Ty::Struct(name.clone()))
+        }
+
+        other => {
+            let (value, ty) = lower_expr(other, ctx)?;
+            body.push(CheckedStmt::Store {
+                offset: base_offset,
+                value,
+            });
+            Ok(ty)
+        }
+    }
+}
+
+fn size_of(ty: &Ty, structs: &HashMap<String, StructInfo>) -> usize {
     match ty {
         Ty::Unit => 0,
         Ty::Int | Ty::Bool | Ty::Pointer(_) => 4,
-        Ty::Array(elem, len) => size_of(elem) * (*len as usize),
+        Ty::Array(elem, len) => size_of(elem, structs) * (*len as usize),
+        Ty::Struct(name) => structs.get(name).map(|info| info.size).unwrap_or(0),
     }
+}
+
+/// A struct's field layout: name, type, and byte offset, in declaration
+/// order, plus the struct's total size.
+pub struct StructInfo {
+    pub fields: Vec<(String, Ty, usize)>,
+    pub size: usize,
+}
+
+/// Resolves every struct's field types and computes byte offsets/total
+/// size for each. Struct-typed fields are computed recursively (so nested
+/// structs work), with a cycle check: a struct can't contain itself *by
+/// value*, directly or indirectly (that's infinite size) - only through a
+/// pointer, which is always 4 bytes regardless of what it points to.
+fn build_struct_registry(
+    structs: &[ast::StructDef],
+    struct_names: &std::collections::HashSet<String>,
+) -> Result<HashMap<String, StructInfo>, Diagnostic> {
+    let mut field_types: HashMap<String, Vec<(String, Ty)>> = HashMap::new();
+    let mut spans: HashMap<String, Span> = HashMap::new();
+
+    for s in structs {
+        let mut seen = std::collections::HashSet::new();
+        let mut fields = Vec::with_capacity(s.fields.len());
+        for field in &s.fields {
+            if !seen.insert(field.name.clone()) {
+                return Err(Diagnostic::error(
+                    format!(
+                        "field '{}' is already defined in struct '{}'",
+                        field.name, s.name
+                    ),
+                    field.span,
+                ));
+            }
+            fields.push((field.name.clone(), resolve_type(&field.ty, struct_names)?));
+        }
+        field_types.insert(s.name.clone(), fields);
+        spans.insert(s.name.clone(), s.span);
+    }
+
+    let mut layouts: HashMap<String, StructInfo> = HashMap::new();
+    let mut in_progress = std::collections::HashSet::new();
+    for name in field_types.keys().cloned().collect::<Vec<_>>() {
+        compute_struct_layout(&name, &field_types, &spans, &mut layouts, &mut in_progress)?;
+    }
+
+    Ok(layouts)
+}
+
+fn compute_struct_layout(
+    name: &str,
+    field_types: &HashMap<String, Vec<(String, Ty)>>,
+    spans: &HashMap<String, Span>,
+    layouts: &mut HashMap<String, StructInfo>,
+    in_progress: &mut std::collections::HashSet<String>,
+) -> Result<(), Diagnostic> {
+    if layouts.contains_key(name) {
+        return Ok(());
+    }
+    if !in_progress.insert(name.to_string()) {
+        return Err(Diagnostic::error(
+            format!(
+                "recursive type '{}' has infinite size - try '*{}' (a pointer) instead",
+                name, name
+            ),
+            spans[name],
+        ));
+    }
+
+    let mut offset = 0usize;
+    let mut resolved_fields = Vec::new();
+    for (field_name, field_ty) in &field_types[name] {
+        if let Ty::Struct(inner_name) = field_ty {
+            compute_struct_layout(inner_name, field_types, spans, layouts, in_progress)?;
+        }
+        let field_size = size_of(field_ty, layouts);
+        resolved_fields.push((field_name.clone(), field_ty.clone(), offset));
+        offset += field_size;
+    }
+
+    in_progress.remove(name);
+    layouts.insert(
+        name.to_string(),
+        StructInfo {
+            fields: resolved_fields,
+            size: offset,
+        },
+    );
+    Ok(())
 }
 
 fn logical_op_str(op: ast::LogicalOp) -> &'static str {
@@ -142,6 +401,18 @@ pub enum CheckedStmt {
 }
 
 pub fn check(program: &ast::Program) -> Result<CheckedProgram, Diagnostic> {
+    let mut struct_names = std::collections::HashSet::new();
+    for s in &program.structs {
+        if !struct_names.insert(s.name.clone()) {
+            return Err(Diagnostic::error(
+                format!("struct '{}' is already defined", s.name),
+                s.span,
+            ));
+        }
+    }
+
+    let structs = build_struct_registry(&program.structs, &struct_names)?;
+
     let mut sigs: HashMap<String, FunctionSig> = HashMap::new();
 
     for function in &program.functions {
@@ -174,11 +445,33 @@ pub fn check(program: &ast::Program) -> Result<CheckedProgram, Diagnostic> {
 
         let mut params = Vec::with_capacity(function.params.len());
         for param in &function.params {
-            params.push(resolve_type(&param.ty)?);
+            let ty = resolve_type(&param.ty, &struct_names)?;
+            if matches!(ty, Ty::Array(_, _) | Ty::Struct(_)) {
+                return Err(Diagnostic::error(
+                    format!(
+                        "'{}' can't be a parameter type yet - arrays and structs aren't supported as parameters or return values; pass a pointer instead",
+                        ty
+                    ),
+                    param.span,
+                ));
+            }
+            params.push(ty);
         }
 
         let return_type = match &function.return_type {
-            Some(ty) => resolve_type(ty)?,
+            Some(ty_name) => {
+                let ty = resolve_type(ty_name, &struct_names)?;
+                if matches!(ty, Ty::Array(_, _) | Ty::Struct(_)) {
+                    return Err(Diagnostic::error(
+                        format!(
+                            "'{}' can't be a return type yet - arrays and structs aren't supported as parameters or return values; return a pointer instead",
+                            ty
+                        ),
+                        ty_name.span(),
+                    ));
+                }
+                ty
+            }
             None => Ty::Unit,
         };
 
@@ -200,7 +493,7 @@ pub fn check(program: &ast::Program) -> Result<CheckedProgram, Diagnostic> {
 
     let mut functions = Vec::new();
     for function in &program.functions {
-        functions.push(check_function(function, &sigs)?);
+        functions.push(check_function(function, &sigs, &structs)?);
     }
 
     Ok(CheckedProgram { functions })
@@ -220,6 +513,7 @@ struct Ctx<'a> {
     symbols: HashMap<String, Symbol>,
     frame_size: usize,
     sigs: &'a HashMap<String, FunctionSig>,
+    structs: &'a HashMap<String, StructInfo>,
     return_type: Ty,
     is_entry: bool,
 }
@@ -227,6 +521,7 @@ struct Ctx<'a> {
 fn check_function(
     function: &ast::FunctionDef,
     sigs: &HashMap<String, FunctionSig>,
+    structs: &HashMap<String, StructInfo>,
 ) -> Result<CheckedFunction, Diagnostic> {
     let sig = &sigs[&function.name];
 
@@ -234,6 +529,7 @@ fn check_function(
         symbols: HashMap::new(),
         frame_size: 0,
         sigs,
+        structs,
         return_type: sig.return_type.clone(),
         is_entry: function.name == "main",
     };
@@ -290,54 +586,16 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx<'_>) -> Result<Vec<CheckedStmt
                     ));
                 }
 
-                if let ast::Expr::ArrayLit { elements, .. } = value {
-                    if !*mutable {
-                        return Err(Diagnostic::error(
-                            format!(
-                                "'{}' must be declared 'let mut' - arrays always live in real memory",
-                                name
-                            ),
-                            *span,
-                        ));
-                    }
+                if matches!(
+                    value,
+                    ast::Expr::ArrayLit { .. } | ast::Expr::StructLit { .. }
+                ) {
+                    let base_offset = ctx.frame_size + 4;
+                    let ty = lower_composite_literal(value, base_offset, ctx, &mut body)?;
+                    ctx.frame_size += size_of(&ty, ctx.structs);
 
-                    let mut checked_elements = Vec::with_capacity(elements.len());
-                    let mut elem_ty: Option<Ty> = None;
-                    for el in elements {
-                        let (checked, ty) = lower_expr(el, ctx)?;
-                        match &elem_ty {
-                            None => elem_ty = Some(ty.clone()),
-                            Some(expected) if *expected != ty => {
-                                return Err(Diagnostic::error(
-                                    format!(
-                                        "array elements must all have the same type - expected '{}', found '{}'",
-                                        expected, ty
-                                    ),
-                                    el.span(),
-                                ));
-                            }
-                            _ => {}
-                        }
-                        checked_elements.push(checked);
-                    }
-                    let elem_ty = elem_ty.expect("parser rejects empty array literals");
-                    let len = checked_elements.len() as u32;
-                    let elem_size = size_of(&elem_ty);
-
-                    let base_offset = ctx.frame_size + elem_size;
-                    ctx.frame_size += elem_size * len as usize;
-
-                    for (i, elem_value) in checked_elements.into_iter().enumerate() {
-                        body.push(CheckedStmt::Store {
-                            offset: base_offset + i * elem_size,
-                            value: elem_value,
-                        });
-                    }
-
-                    ctx.symbols.insert(
-                        name.clone(),
-                        Symbol::Local(base_offset, Ty::Array(Box::new(elem_ty), len), true),
-                    );
+                    ctx.symbols
+                        .insert(name.clone(), Symbol::Local(base_offset, ty, *mutable));
                     continue;
                 }
 
@@ -437,41 +695,15 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx<'_>) -> Result<Vec<CheckedStmt
                 }
 
                 ast::AssignTarget::Index { base, index } => {
-                    let name = match base {
-                        ast::Expr::Ident(name, _) => name,
+                    let (base_offset, base_ty, is_mutable) = resolve_place(base, ctx)?;
+                    let elem_ty = match base_ty {
+                        Ty::Array(elem_ty, _) => *elem_ty,
                         other => {
                             return Err(Diagnostic::error(
-                                "only a plain array variable can be indexed for assignment right now (e.g. 'arr[i] = v;')",
-                                other.span(),
-                            ));
-                        }
-                    };
-
-                    let (base_offset, elem_ty, is_mutable) = match ctx.symbols.get(name) {
-                        Some(Symbol::Local(offset, Ty::Array(elem_ty, _), mutable)) => {
-                            (*offset, (**elem_ty).clone(), *mutable)
-                        }
-                        Some(Symbol::Local(_, other_ty, _)) => {
-                            return Err(Diagnostic::error(
                                 format!(
-                                    "cannot index into '{}' - it has type '{}', not an array",
-                                    name, other_ty
+                                    "cannot index into a '{}' - only arrays can be indexed",
+                                    other
                                 ),
-                                *span,
-                            ));
-                        }
-                        Some(Symbol::Const(_, _)) => {
-                            return Err(Diagnostic::error(
-                                format!(
-                                    "cannot index into '{}' - it is a constant, not an array",
-                                    name
-                                ),
-                                *span,
-                            ));
-                        }
-                        None => {
-                            return Err(Diagnostic::error(
-                                format!("undefined name '{}'", name),
                                 *span,
                             ));
                         }
@@ -479,10 +711,7 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx<'_>) -> Result<Vec<CheckedStmt
 
                     if !is_mutable {
                         return Err(Diagnostic::error(
-                            format!(
-                                "cannot assign to an element of '{}' - it is not declared 'mut'",
-                                name
-                            ),
+                            "cannot assign to an array element - the array is not declared 'mut'",
                             *span,
                         ));
                     }
@@ -510,9 +739,59 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx<'_>) -> Result<Vec<CheckedStmt
                     body.push(CheckedStmt::StoreIndexed {
                         base_offset,
                         index: checked_index,
-                        elem_size: size_of(&elem_ty),
+                        elem_size: size_of(&elem_ty, ctx.structs),
                         value: checked_value,
                     });
+                }
+
+                ast::AssignTarget::Field { base, field } => {
+                    let (base_offset, base_ty, mutable) = resolve_place(base, ctx)?;
+                    let struct_name = match base_ty {
+                        Ty::Struct(name) => name,
+                        other => {
+                            return Err(Diagnostic::error(
+                                format!("cannot access field '{}' on a '{}'", field, other),
+                                *span,
+                            ));
+                        }
+                    };
+
+                    if !mutable {
+                        return Err(Diagnostic::error(
+                            format!(
+                                "cannot assign to a field of '{}' - it is not declared 'mut'",
+                                struct_name
+                            ),
+                            *span,
+                        ));
+                    }
+
+                    let info = &ctx.structs[&struct_name];
+                    let (_, field_ty, field_offset) = info
+                        .fields
+                        .iter()
+                        .find(|(n, _, _)| n == field)
+                        .ok_or_else(|| {
+                            Diagnostic::error(
+                                format!("struct '{}' has no field '{}'", struct_name, field),
+                                *span,
+                            )
+                        })?;
+                    let offset = base_offset + *field_offset;
+                    let field_ty = field_ty.clone();
+
+                    let (value, value_ty) = lower_expr(value, ctx)?;
+                    if value_ty != field_ty {
+                        return Err(Diagnostic::error(
+                            format!(
+                                "cannot assign a '{}' to field '{}', which is a '{}'",
+                                value_ty, field, field_ty
+                            ),
+                            *span,
+                        ));
+                    }
+
+                    body.push(CheckedStmt::Store { offset, value });
                 }
             },
 
@@ -625,7 +904,18 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
 
         ast::Expr::Ident(name, span) => match ctx.symbols.get(name) {
             Some(Symbol::Const(value, ty)) => Ok((CheckedExpr::Const(*value), ty.clone())),
-            Some(Symbol::Local(offset, ty, _)) => Ok((CheckedExpr::Local(*offset), ty.clone())),
+            Some(Symbol::Local(offset, ty, _)) => {
+                if matches!(ty, Ty::Array(_, _) | Ty::Struct(_)) {
+                    return Err(Diagnostic::error(
+                        format!(
+                            "cannot use the whole '{}' value of '{}' directly yet - access an individual field or element instead",
+                            ty, name
+                        ),
+                        *span,
+                    ));
+                }
+                Ok((CheckedExpr::Local(*offset), ty.clone()))
+            }
             None => Err(Diagnostic::error(
                 format!("undefined name '{}'", name),
                 *span,
@@ -889,47 +1179,37 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
             )),
         },
 
-        ast::Expr::ArrayLit { span, .. } => Err(Diagnostic::error(
-            "array literals are only allowed as the direct initializer of a 'let' binding right now",
-            *span,
-        )),
+        ast::Expr::ArrayLit { span, .. } | ast::Expr::StructLit { span, .. } => {
+            Err(Diagnostic::error(
+                "array/struct literals are only allowed as the direct initializer of a 'let' binding right now",
+                *span,
+            ))
+        }
+
+        ast::Expr::Field { .. } => {
+            let (offset, ty, _mutable) = resolve_place(expr, ctx)?;
+            if matches!(ty, Ty::Array(_, _) | Ty::Struct(_)) {
+                return Err(Diagnostic::error(
+                    format!(
+                        "cannot use the whole '{}' value directly yet - access an individual field or element instead",
+                        ty
+                    ),
+                    expr.span(),
+                ));
+            }
+            Ok((CheckedExpr::Local(offset), ty))
+        }
 
         ast::Expr::Index { base, index, span } => {
-            let name = match base.as_ref() {
-                ast::Expr::Ident(name, _) => name,
+            let (base_offset, base_ty, _mutable) = resolve_place(base, ctx)?;
+            let elem_ty = match base_ty {
+                Ty::Array(elem_ty, _) => *elem_ty,
                 other => {
                     return Err(Diagnostic::error(
-                        "only a plain array variable can be indexed right now (e.g. 'arr[i]')",
-                        other.span(),
-                    ));
-                }
-            };
-
-            let (base_offset, elem_ty) = match ctx.symbols.get(name) {
-                Some(Symbol::Local(offset, Ty::Array(elem_ty, _), _)) => {
-                    (*offset, (**elem_ty).clone())
-                }
-                Some(Symbol::Local(_, other_ty, _)) => {
-                    return Err(Diagnostic::error(
                         format!(
-                            "cannot index into '{}' - it has type '{}', not an array",
-                            name, other_ty
+                            "cannot index into a '{}' - only arrays can be indexed",
+                            other
                         ),
-                        *span,
-                    ));
-                }
-                Some(Symbol::Const(_, _)) => {
-                    return Err(Diagnostic::error(
-                        format!(
-                            "cannot index into '{}' - it is a constant, not an array",
-                            name
-                        ),
-                        *span,
-                    ));
-                }
-                None => {
-                    return Err(Diagnostic::error(
-                        format!("undefined name '{}'", name),
                         *span,
                     ));
                 }
@@ -944,7 +1224,7 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
                 ));
             }
 
-            let elem_size = size_of(&elem_ty);
+            let elem_size = size_of(&elem_ty, ctx.structs);
             Ok((
                 CheckedExpr::Index {
                     base_offset,

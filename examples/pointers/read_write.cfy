@@ -1,0 +1,10 @@
+fn main() {
+    let mut x = 10;
+    let p = &x;
+    let mut y = *p; // y = 10
+
+    *p = 42; // write through the pointer
+    y = *p; // y = 42
+
+    $syscall(1, y, 0, 0, 0, 0, 0); // exit 42
+}

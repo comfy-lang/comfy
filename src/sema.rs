@@ -189,7 +189,7 @@ struct FunctionSig {
 
 enum Symbol {
     Const(i64, Ty),
-    Local(usize, Ty),
+    Local(usize, Ty, bool), // offset, type, is_mutable
 }
 
 struct Ctx<'a> {
@@ -219,7 +219,7 @@ fn check_function(
         ctx.frame_size += 4;
         let offset = ctx.frame_size;
         ctx.symbols
-            .insert(param.name.clone(), Symbol::Local(offset, ty.clone()));
+            .insert(param.name.clone(), Symbol::Local(offset, ty.clone(), true));
 
         param_offsets.push(offset);
     }
@@ -277,7 +277,8 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx<'_>) -> Result<Vec<CheckedStmt
                 if *mutable {
                     ctx.frame_size += 4;
                     let offset = ctx.frame_size;
-                    ctx.symbols.insert(name.clone(), Symbol::Local(offset, ty));
+                    ctx.symbols
+                        .insert(name.clone(), Symbol::Local(offset, ty, true));
                     body.push(CheckedStmt::Store { offset, value });
                 } else {
                     match value {
@@ -285,13 +286,11 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx<'_>) -> Result<Vec<CheckedStmt
                             ctx.symbols.insert(name.clone(), Symbol::Const(v, ty));
                         }
                         _ => {
-                            return Err(Diagnostic::error(
-                                format!(
-                                    "'{}' is not a compile-time constant; use 'let mut' instead",
-                                    name
-                                ),
-                                *span,
-                            ));
+                            ctx.frame_size += 4;
+                            let offset = ctx.frame_size;
+                            ctx.symbols
+                                .insert(name.clone(), Symbol::Local(offset, ty, false));
+                            body.push(CheckedStmt::Store { offset, value });
                         }
                     }
                 }
@@ -304,13 +303,10 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx<'_>) -> Result<Vec<CheckedStmt
             } => match target {
                 ast::AssignTarget::Name(name) => {
                     let (offset, expected_ty) = match ctx.symbols.get(name) {
-                        Some(Symbol::Local(offset, ty)) => (*offset, ty.clone()),
-                        Some(Symbol::Const(_, _)) => {
+                        Some(Symbol::Local(offset, ty, true)) => (*offset, ty.clone()),
+                        Some(Symbol::Local(_, _, false)) | Some(Symbol::Const(_, _)) => {
                             return Err(Diagnostic::error(
-                                format!(
-                                    "cannot assign to '{}' - it is a constant, not 'mut'",
-                                    name
-                                ),
+                                format!("cannot assign to '{}' - it is not declared 'mut'", name),
                                 *span,
                             ));
                         }
@@ -475,7 +471,7 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
 
         ast::Expr::Ident(name, span) => match ctx.symbols.get(name) {
             Some(Symbol::Const(value, ty)) => Ok((CheckedExpr::Const(*value), ty.clone())),
-            Some(Symbol::Local(offset, ty)) => Ok((CheckedExpr::Local(*offset), ty.clone())),
+            Some(Symbol::Local(offset, ty, _)) => Ok((CheckedExpr::Local(*offset), ty.clone())),
             None => Err(Diagnostic::error(
                 format!("undefined name '{}'", name),
                 *span,
@@ -722,7 +718,7 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
         }
 
         ast::Expr::AddressOf { name, span } => match ctx.symbols.get(name) {
-            Some(Symbol::Local(offset, ty)) => Ok((
+            Some(Symbol::Local(offset, ty, _)) => Ok((
                 CheckedExpr::AddressOf(*offset),
                 Ty::Pointer(Box::new(ty.clone())),
             )),

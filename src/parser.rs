@@ -241,17 +241,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_expr_stmt(&mut self) -> Result<Stmt, Diagnostic> {
-        let start = self.span();
-        let value = self.parse_expr()?;
-        let end = self.span();
-        self.expect(&TokenKind::Semicolon)?;
-        Ok(Stmt::Expr {
-            value,
-            span: start.to(end),
-        })
-    }
-
     fn parse_syscall_args(&mut self, name: String, start: Span) -> Result<Expr, Diagnostic> {
         if name != "syscall" {
             return Err(Diagnostic::error(

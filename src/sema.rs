@@ -9,11 +9,12 @@ use crate::{
     diag::{Diagnostic, Span},
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Ty {
     Int,
     Bool,
     Unit,
+    Pointer(Box<Ty>),
 }
 
 impl std::fmt::Display for Ty {
@@ -22,18 +23,22 @@ impl std::fmt::Display for Ty {
             Ty::Int => write!(f, "int"),
             Ty::Bool => write!(f, "bool"),
             Ty::Unit => write!(f, "()"),
+            Ty::Pointer(inner) => write!(f, "*{}", inner),
         }
     }
 }
 
 fn resolve_type(ty: &ast::TypeName) -> Result<Ty, Diagnostic> {
-    match ty.name.as_str() {
-        "int" => Ok(Ty::Int),
-        "bool" => Ok(Ty::Bool),
-        other => Err(Diagnostic::error(
-            format!("unknown type '{}'", other),
-            ty.span,
-        )),
+    match ty {
+        ast::TypeName::Named(name, span) => match name.as_str() {
+            "int" => Ok(Ty::Int),
+            "bool" => Ok(Ty::Bool),
+            other => Err(Diagnostic::error(
+                format!("unknown type '{}'", other),
+                *span,
+            )),
+        },
+        ast::TypeName::Pointer(inner, _) => Ok(Ty::Pointer(Box::new(resolve_type(inner)?))),
     }
 }
 
@@ -86,6 +91,8 @@ pub enum CheckedExpr {
         name: String,
         args: Vec<CheckedExpr>,
     },
+    AddressOf(usize),
+    Deref(Box<CheckedExpr>),
 }
 
 pub enum CheckedStmt {
@@ -104,6 +111,10 @@ pub enum CheckedStmt {
         body: Vec<CheckedStmt>,
     },
     Return(Option<CheckedExpr>),
+    StoreThroughPointer {
+        address: CheckedExpr,
+        value: CheckedExpr,
+    },
 }
 
 pub fn check(program: &ast::Program) -> Result<CheckedProgram, Diagnostic> {
@@ -199,7 +210,7 @@ fn check_function(
         symbols: HashMap::new(),
         frame_size: 0,
         sigs,
-        return_type: sig.return_type,
+        return_type: sig.return_type.clone(),
         is_entry: function.name == "main",
     };
 
@@ -208,7 +219,8 @@ fn check_function(
         ctx.frame_size += 4;
         let offset = ctx.frame_size;
         ctx.symbols
-            .insert(param.name.clone(), Symbol::Local(offset, *ty));
+            .insert(param.name.clone(), Symbol::Local(offset, ty.clone()));
+
         param_offsets.push(offset);
     }
 
@@ -285,35 +297,74 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx<'_>) -> Result<Vec<CheckedStmt
                 }
             }
 
-            ast::Stmt::Assign { name, value, span } => {
-                let (offset, expected_ty) = match ctx.symbols.get(name) {
-                    Some(Symbol::Local(offset, ty)) => (*offset, *ty),
-                    Some(Symbol::Const(_, _)) => {
-                        return Err(Diagnostic::error(
-                            format!("cannot assign to '{}' - it is a constant, not 'mut'", name),
-                            *span,
-                        ));
-                    }
-                    None => {
-                        return Err(Diagnostic::error(
-                            format!("undefined name '{}'", name),
-                            *span,
-                        ));
-                    }
-                };
+            ast::Stmt::Assign {
+                target,
+                value,
+                span,
+            } => match target {
+                ast::AssignTarget::Name(name) => {
+                    let (offset, expected_ty) = match ctx.symbols.get(name) {
+                        Some(Symbol::Local(offset, ty)) => (*offset, ty.clone()),
+                        Some(Symbol::Const(_, _)) => {
+                            return Err(Diagnostic::error(
+                                format!(
+                                    "cannot assign to '{}' - it is a constant, not 'mut'",
+                                    name
+                                ),
+                                *span,
+                            ));
+                        }
+                        None => {
+                            return Err(Diagnostic::error(
+                                format!("undefined name '{}'", name),
+                                *span,
+                            ));
+                        }
+                    };
 
-                let (value, ty) = lower_expr(value, ctx)?;
-                if ty != expected_ty {
-                    return Err(Diagnostic::error(
-                        format!(
-                            "cannot assign a '{}' to '{}', which is a '{}'",
-                            ty, name, expected_ty
-                        ),
-                        *span,
-                    ));
+                    let (value, ty) = lower_expr(value, ctx)?;
+                    if ty != expected_ty {
+                        return Err(Diagnostic::error(
+                            format!(
+                                "cannot assign a '{}' to '{}', which is a '{}'",
+                                ty, name, expected_ty
+                            ),
+                            *span,
+                        ));
+                    }
+                    body.push(CheckedStmt::Store { offset, value });
                 }
-                body.push(CheckedStmt::Store { offset, value });
-            }
+
+                ast::AssignTarget::Deref(pointer_expr) => {
+                    let pointer_span = pointer_expr.span();
+                    let (address, pointer_ty) = lower_expr(pointer_expr, ctx)?;
+                    let pointee_ty = match pointer_ty {
+                        Ty::Pointer(inner) => *inner,
+                        other => {
+                            return Err(Diagnostic::error(
+                                format!(
+                                    "cannot dereference a '{}' - '*' only applies to pointers",
+                                    other
+                                ),
+                                pointer_span,
+                            ));
+                        }
+                    };
+
+                    let (value, ty) = lower_expr(value, ctx)?;
+                    if ty != pointee_ty {
+                        return Err(Diagnostic::error(
+                            format!(
+                                "cannot store a '{}' through a pointer to '{}'",
+                                ty, pointee_ty
+                            ),
+                            *span,
+                        ));
+                    }
+
+                    body.push(CheckedStmt::StoreThroughPointer { address, value });
+                }
+            },
 
             ast::Stmt::Expr { value, .. } => {
                 let (value, _ty) = lower_expr(value, ctx)?;
@@ -423,8 +474,8 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
         ast::Expr::BoolLit(value, _) => Ok((CheckedExpr::Const(*value as i64), Ty::Bool)),
 
         ast::Expr::Ident(name, span) => match ctx.symbols.get(name) {
-            Some(Symbol::Const(value, ty)) => Ok((CheckedExpr::Const(*value), *ty)),
-            Some(Symbol::Local(offset, ty)) => Ok((CheckedExpr::Local(*offset), *ty)),
+            Some(Symbol::Const(value, ty)) => Ok((CheckedExpr::Const(*value), ty.clone())),
+            Some(Symbol::Local(offset, ty)) => Ok((CheckedExpr::Local(*offset), ty.clone())),
             None => Err(Diagnostic::error(
                 format!("undefined name '{}'", name),
                 *span,
@@ -480,6 +531,16 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
                         )),
                     }
                 }
+                ast::UnaryOp::Deref => match ty {
+                    Ty::Pointer(inner_ty) => Ok((CheckedExpr::Deref(Box::new(operand)), *inner_ty)),
+                    other => Err(Diagnostic::error(
+                        format!(
+                            "cannot dereference a '{}' - '*' only applies to pointers",
+                            other
+                        ),
+                        *span,
+                    )),
+                },
             }
         }
 
@@ -597,9 +658,12 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
             let mut lowered = Vec::with_capacity(7);
             for arg in args.iter() {
                 let (value, ty) = lower_expr(arg, ctx)?;
-                if ty != Ty::Int {
+                if ty != Ty::Int && !matches!(ty, Ty::Pointer(_)) {
                     return Err(Diagnostic::error(
-                        format!("'$syscall' arguments must be integers, found a '{}'", ty),
+                        format!(
+                            "'$syscall' arguments must be integers or pointers, found a '{}'",
+                            ty
+                        ),
                         arg.span(),
                     ));
                 }
@@ -653,9 +717,27 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
                     name: name.clone(),
                     args: lowered,
                 },
-                sig.return_type,
+                sig.return_type.clone(),
             ))
         }
+
+        ast::Expr::AddressOf { name, span } => match ctx.symbols.get(name) {
+            Some(Symbol::Local(offset, ty)) => Ok((
+                CheckedExpr::AddressOf(*offset),
+                Ty::Pointer(Box::new(ty.clone())),
+            )),
+            Some(Symbol::Const(_, _)) => Err(Diagnostic::error(
+                format!(
+                    "cannot take the address of '{}' - it's a compile-time constant with no memory location; use 'let mut' instead",
+                    name
+                ),
+                *span,
+            )),
+            None => Err(Diagnostic::error(
+                format!("undefined name '{}'", name),
+                *span,
+            )),
+        },
     }
 }
 

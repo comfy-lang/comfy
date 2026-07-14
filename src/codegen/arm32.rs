@@ -177,6 +177,14 @@ impl Emitter {
                     .expect("'return' should only appear inside a function body");
                 self.out.push_str(&format!("\tb {}\n", label));
             }
+
+            CheckedStmt::StoreThroughPointer { address, value } => {
+                self.emit_expr(address);
+                self.emit_expr(value);
+                self.out.push_str("\tpop {r1}\n"); // value (pushed last, popped first)
+                self.out.push_str("\tpop {r0}\n"); // address
+                self.out.push_str("\tstr r1, [r0]\n");
+            }
         }
     }
 
@@ -200,6 +208,9 @@ impl Emitter {
                 match op {
                     ast::UnaryOp::Neg => self.out.push_str("\trsb r0, r0, #0\n"),
                     ast::UnaryOp::Not => self.out.push_str("\teor r0, r0, #1\n"),
+                    ast::UnaryOp::Deref => {
+                        unreachable!("Deref is lowered to CheckedExpr::Deref, not Unary")
+                    }
                 }
                 self.out.push_str("\tpush {r0}\n");
             }
@@ -303,6 +314,18 @@ impl Emitter {
                     self.out.push_str(&format!("\tpop {{r{}}}\n", i));
                 }
                 self.out.push_str(&format!("\tbl {}\n", label_for(name)));
+                self.out.push_str("\tpush {r0}\n");
+            }
+
+            CheckedExpr::AddressOf(offset) => {
+                self.out.push_str(&format!("\tsub r0, fp, #{}\n", offset));
+                self.out.push_str("\tpush {r0}\n");
+            }
+
+            CheckedExpr::Deref(inner) => {
+                self.emit_expr(inner);
+                self.out.push_str("\tpop {r0}\n");
+                self.out.push_str("\tldr r0, [r0]\n");
                 self.out.push_str("\tpush {r0}\n");
             }
         }

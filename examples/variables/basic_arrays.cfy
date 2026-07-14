@@ -1,0 +1,15 @@
+fn main() {
+    let mut arr = [10, 20, 30, 40];
+    let mut sum = 0;
+    let mut i = 0;
+
+    while i < 4 {
+        sum = sum + arr[i];
+        i = i + 1;
+    }
+
+    arr[2] = 99;
+    sum = sum + arr[2] - 30; // replace old arr[2]=30 with 99 in the running sum
+
+    $syscall(1, sum, 0, 0, 0, 0, 0); // exit (10+20+30+40) + 99 - 30 = 169
+}

@@ -5,6 +5,7 @@ use crate::diag::Span;
 pub enum TypeName {
     Named(String, Span),
     Pointer(Box<TypeName>, Span),
+    Array(Box<TypeName>, u32, Span), // element type, length
 }
 
 impl TypeName {
@@ -12,6 +13,7 @@ impl TypeName {
         match self {
             TypeName::Named(_, span) => *span,
             TypeName::Pointer(_, span) => *span,
+            TypeName::Array(_, _, span) => *span,
         }
     }
 }
@@ -90,6 +92,15 @@ pub enum Expr {
         name: String,
         span: Span,
     },
+    ArrayLit {
+        elements: Vec<Expr>,
+        span: Span,
+    },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -105,6 +116,8 @@ impl Expr {
             Expr::Syscall { span, .. } => *span,
             Expr::Call { span, .. } => *span,
             Expr::AddressOf { span, .. } => *span,
+            Expr::ArrayLit { span, .. } => *span,
+            Expr::Index { span, .. } => *span,
         }
     }
 }
@@ -112,6 +125,7 @@ impl Expr {
 pub enum AssignTarget {
     Name(String),
     Deref(Expr),
+    Index { base: Expr, index: Expr },
 }
 
 pub enum Stmt {

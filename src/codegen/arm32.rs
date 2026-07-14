@@ -185,6 +185,24 @@ impl Emitter {
                 self.out.push_str("\tpop {r0}\n"); // address
                 self.out.push_str("\tstr r1, [r0]\n");
             }
+
+            CheckedStmt::StoreIndexed {
+                base_offset,
+                index,
+                elem_size,
+                value,
+            } => {
+                self.emit_expr(index);
+                self.emit_expr(value);
+                self.out.push_str("\tpop {r3}\n"); // value (pushed last, popped first)
+                self.out.push_str("\tpop {r1}\n"); // index
+                self.out.push_str(&format!("\tmov r2, #{}\n", elem_size));
+                self.out.push_str("\tmul r1, r2, r1\n"); // r1 = index * elem_size
+                self.out
+                    .push_str(&format!("\tsub r0, fp, #{}\n", base_offset));
+                self.out.push_str("\tsub r0, r0, r1\n"); // r0 = address of arr[index]
+                self.out.push_str("\tstr r3, [r0]\n");
+            }
         }
     }
 
@@ -325,6 +343,22 @@ impl Emitter {
             CheckedExpr::Deref(inner) => {
                 self.emit_expr(inner);
                 self.out.push_str("\tpop {r0}\n");
+                self.out.push_str("\tldr r0, [r0]\n");
+                self.out.push_str("\tpush {r0}\n");
+            }
+
+            CheckedExpr::Index {
+                base_offset,
+                index,
+                elem_size,
+            } => {
+                self.emit_expr(index);
+                self.out.push_str("\tpop {r1}\n"); // index
+                self.out.push_str(&format!("\tmov r2, #{}\n", elem_size));
+                self.out.push_str("\tmul r1, r2, r1\n"); // r1 = index * elem_size
+                self.out
+                    .push_str(&format!("\tsub r0, fp, #{}\n", base_offset));
+                self.out.push_str("\tsub r0, r0, r1\n"); // r0 = address of arr[index]
                 self.out.push_str("\tldr r0, [r0]\n");
                 self.out.push_str("\tpush {r0}\n");
             }

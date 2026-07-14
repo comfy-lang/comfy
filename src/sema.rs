@@ -15,6 +15,7 @@ pub enum Ty {
     Bool,
     Unit,
     Pointer(Box<Ty>),
+    Array(Box<Ty>, u32),
 }
 
 impl std::fmt::Display for Ty {
@@ -24,6 +25,7 @@ impl std::fmt::Display for Ty {
             Ty::Bool => write!(f, "bool"),
             Ty::Unit => write!(f, "()"),
             Ty::Pointer(inner) => write!(f, "*{}", inner),
+            Ty::Array(elem, len) => write!(f, "[{}; {}]", elem, len),
         }
     }
 }
@@ -39,6 +41,17 @@ fn resolve_type(ty: &ast::TypeName) -> Result<Ty, Diagnostic> {
             )),
         },
         ast::TypeName::Pointer(inner, _) => Ok(Ty::Pointer(Box::new(resolve_type(inner)?))),
+        ast::TypeName::Array(elem, len, _) => Ok(Ty::Array(Box::new(resolve_type(elem)?), *len)),
+    }
+}
+
+/// Size of a value of this type, in bytes. Everything is word-sized so far
+/// except arrays, which are as big as their element type times their length.
+fn size_of(ty: &Ty) -> usize {
+    match ty {
+        Ty::Unit => 0,
+        Ty::Int | Ty::Bool | Ty::Pointer(_) => 4,
+        Ty::Array(elem, len) => size_of(elem) * (*len as usize),
     }
 }
 
@@ -93,6 +106,11 @@ pub enum CheckedExpr {
     },
     AddressOf(usize),
     Deref(Box<CheckedExpr>),
+    Index {
+        base_offset: usize,
+        index: Box<CheckedExpr>,
+        elem_size: usize,
+    },
 }
 
 pub enum CheckedStmt {
@@ -113,6 +131,12 @@ pub enum CheckedStmt {
     Return(Option<CheckedExpr>),
     StoreThroughPointer {
         address: CheckedExpr,
+        value: CheckedExpr,
+    },
+    StoreIndexed {
+        base_offset: usize,
+        index: CheckedExpr,
+        elem_size: usize,
         value: CheckedExpr,
     },
 }
@@ -266,6 +290,57 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx<'_>) -> Result<Vec<CheckedStmt
                     ));
                 }
 
+                if let ast::Expr::ArrayLit { elements, .. } = value {
+                    if !*mutable {
+                        return Err(Diagnostic::error(
+                            format!(
+                                "'{}' must be declared 'let mut' - arrays always live in real memory",
+                                name
+                            ),
+                            *span,
+                        ));
+                    }
+
+                    let mut checked_elements = Vec::with_capacity(elements.len());
+                    let mut elem_ty: Option<Ty> = None;
+                    for el in elements {
+                        let (checked, ty) = lower_expr(el, ctx)?;
+                        match &elem_ty {
+                            None => elem_ty = Some(ty.clone()),
+                            Some(expected) if *expected != ty => {
+                                return Err(Diagnostic::error(
+                                    format!(
+                                        "array elements must all have the same type - expected '{}', found '{}'",
+                                        expected, ty
+                                    ),
+                                    el.span(),
+                                ));
+                            }
+                            _ => {}
+                        }
+                        checked_elements.push(checked);
+                    }
+                    let elem_ty = elem_ty.expect("parser rejects empty array literals");
+                    let len = checked_elements.len() as u32;
+                    let elem_size = size_of(&elem_ty);
+
+                    let base_offset = ctx.frame_size + elem_size;
+                    ctx.frame_size += elem_size * len as usize;
+
+                    for (i, elem_value) in checked_elements.into_iter().enumerate() {
+                        body.push(CheckedStmt::Store {
+                            offset: base_offset + i * elem_size,
+                            value: elem_value,
+                        });
+                    }
+
+                    ctx.symbols.insert(
+                        name.clone(),
+                        Symbol::Local(base_offset, Ty::Array(Box::new(elem_ty), len), true),
+                    );
+                    continue;
+                }
+
                 let (value, ty) = lower_expr(value, ctx)?;
                 if ty == Ty::Unit {
                     return Err(Diagnostic::error(
@@ -359,6 +434,85 @@ fn check_block(stmts: &[ast::Stmt], ctx: &mut Ctx<'_>) -> Result<Vec<CheckedStmt
                     }
 
                     body.push(CheckedStmt::StoreThroughPointer { address, value });
+                }
+
+                ast::AssignTarget::Index { base, index } => {
+                    let name = match base {
+                        ast::Expr::Ident(name, _) => name,
+                        other => {
+                            return Err(Diagnostic::error(
+                                "only a plain array variable can be indexed for assignment right now (e.g. 'arr[i] = v;')",
+                                other.span(),
+                            ));
+                        }
+                    };
+
+                    let (base_offset, elem_ty, is_mutable) = match ctx.symbols.get(name) {
+                        Some(Symbol::Local(offset, Ty::Array(elem_ty, _), mutable)) => {
+                            (*offset, (**elem_ty).clone(), *mutable)
+                        }
+                        Some(Symbol::Local(_, other_ty, _)) => {
+                            return Err(Diagnostic::error(
+                                format!(
+                                    "cannot index into '{}' - it has type '{}', not an array",
+                                    name, other_ty
+                                ),
+                                *span,
+                            ));
+                        }
+                        Some(Symbol::Const(_, _)) => {
+                            return Err(Diagnostic::error(
+                                format!(
+                                    "cannot index into '{}' - it is a constant, not an array",
+                                    name
+                                ),
+                                *span,
+                            ));
+                        }
+                        None => {
+                            return Err(Diagnostic::error(
+                                format!("undefined name '{}'", name),
+                                *span,
+                            ));
+                        }
+                    };
+
+                    if !is_mutable {
+                        return Err(Diagnostic::error(
+                            format!(
+                                "cannot assign to an element of '{}' - it is not declared 'mut'",
+                                name
+                            ),
+                            *span,
+                        ));
+                    }
+
+                    let index_span = index.span();
+                    let (checked_index, index_ty) = lower_expr(index, ctx)?;
+                    if index_ty != Ty::Int {
+                        return Err(Diagnostic::error(
+                            format!("array index must be an 'int', found '{}'", index_ty),
+                            index_span,
+                        ));
+                    }
+
+                    let (checked_value, value_ty) = lower_expr(value, ctx)?;
+                    if value_ty != elem_ty {
+                        return Err(Diagnostic::error(
+                            format!(
+                                "cannot assign a '{}' to an element of type '{}'",
+                                value_ty, elem_ty
+                            ),
+                            *span,
+                        ));
+                    }
+
+                    body.push(CheckedStmt::StoreIndexed {
+                        base_offset,
+                        index: checked_index,
+                        elem_size: size_of(&elem_ty),
+                        value: checked_value,
+                    });
                 }
             },
 
@@ -734,6 +888,72 @@ fn lower_expr(expr: &ast::Expr, ctx: &Ctx<'_>) -> Result<(CheckedExpr, Ty), Diag
                 *span,
             )),
         },
+
+        ast::Expr::ArrayLit { span, .. } => Err(Diagnostic::error(
+            "array literals are only allowed as the direct initializer of a 'let' binding right now",
+            *span,
+        )),
+
+        ast::Expr::Index { base, index, span } => {
+            let name = match base.as_ref() {
+                ast::Expr::Ident(name, _) => name,
+                other => {
+                    return Err(Diagnostic::error(
+                        "only a plain array variable can be indexed right now (e.g. 'arr[i]')",
+                        other.span(),
+                    ));
+                }
+            };
+
+            let (base_offset, elem_ty) = match ctx.symbols.get(name) {
+                Some(Symbol::Local(offset, Ty::Array(elem_ty, _), _)) => {
+                    (*offset, (**elem_ty).clone())
+                }
+                Some(Symbol::Local(_, other_ty, _)) => {
+                    return Err(Diagnostic::error(
+                        format!(
+                            "cannot index into '{}' - it has type '{}', not an array",
+                            name, other_ty
+                        ),
+                        *span,
+                    ));
+                }
+                Some(Symbol::Const(_, _)) => {
+                    return Err(Diagnostic::error(
+                        format!(
+                            "cannot index into '{}' - it is a constant, not an array",
+                            name
+                        ),
+                        *span,
+                    ));
+                }
+                None => {
+                    return Err(Diagnostic::error(
+                        format!("undefined name '{}'", name),
+                        *span,
+                    ));
+                }
+            };
+
+            let index_span = index.span();
+            let (checked_index, index_ty) = lower_expr(index, ctx)?;
+            if index_ty != Ty::Int {
+                return Err(Diagnostic::error(
+                    format!("array index must be an 'int', found '{}'", index_ty),
+                    index_span,
+                ));
+            }
+
+            let elem_size = size_of(&elem_ty);
+            Ok((
+                CheckedExpr::Index {
+                    base_offset,
+                    index: Box::new(checked_index),
+                    elem_size,
+                },
+                elem_ty,
+            ))
+        }
     }
 }
 

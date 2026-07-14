@@ -24,9 +24,9 @@ util/host-run.sh build/main
 util/run.sh examples/exit_code.cfy
 ```
 
-## Current language surface
+## Examples
 
-`fn main()` plus any number of user-defined functions, with variables, arithmetic, comparisons, `if`/`else`/`while`, and syscalls:
+**Control flow & recursion:**
 
 ```rust
 // examples/showcase.cfy
@@ -37,54 +37,75 @@ fn factorial(n: int) -> int {
     return n * factorial(n - 1);
 }
 
-fn sum_up_to(n: int, out: *int) {
-    let mut i = 1;
-    let mut total = 0;
-    while i <= n {
-        total = total + i;
-        i = i + 1;
-    }
-    *out = total;
-}
-
 fn main() {
-    let mut sum = 0;
-    sum_up_to(5, &sum); // sum = 1+2+3+4+5 = 15
-
-    let fact = factorial(4); // 24
-
-    let mut nums = [10, 20, 30, 40];
-    nums[1] = 25;
-    let extra = nums[0] + nums[1] + nums[2] + nums[3]; // 10+25+30+40 = 105
-
     let mut code = 0;
-    if sum > 10 && fact >= 20 {
-        code = sum + fact + extra; // 144
-    } else if sum == 0 || !(fact < 0) {
-        code = 1;
+    if factorial(4) >= 20 && !(factorial(4) < 0) {
+        code = factorial(4); // 24
     }
-
-    $syscall(1, code, 0, 0, 0, 0, 0); // exit 144
+    $syscall(1, code, 0, 0, 0, 0, 0); // exit 24
 }
 ```
 
-- `let NAME = expr;` is an immutable binding. When `expr` is provably constant it's folded away entirely (zero runtime cost); otherwise it falls back to a real, immutable stack slot. `let mut NAME = expr;` is always a real stack-allocated local that can be reassigned with `NAME = expr;`.
-- Arithmetic (`+ - * / %`, unary `-`) is constant-folded when possible; runtime arithmetic falls back to a simple stack-machine codegen. Runtime (non-constant) `/` and `%` aren't supported yet - arm32 has no hardware divide instruction and the compiler is `-nostdlib`, so it can't call into libgcc for a software fallback.
-- Comparisons (`== != < <= > >=`) produce a real `bool`, and can't be chained (`a < b < c` doesn't parse). `if`/`while` conditions must be `bool`; comfy does not implicitly convert integers to booleans.
-- Functions take typed parameters (`int`/`bool` so far) and an optional `-> Type` return; omitting it means the function returns `()`. Functions must end with a `return` statement if they return a value. Calls follow the AAPCS calling convention (up to 4 arguments in `r0`-`r3`, return value in `r0`) and recursion works.
-- `$syscall(nr, a0, a1, a2, a3, a4, a5)` is the sole compiler intrinsic, usable as a statement or an expression (its return value, from `r0`, can be captured). It maps directly onto the Linux ARM EABI syscall convention. Named wrappers like `write`/`read`/`exit` will come back as ordinary standard-library functions built on top of this, once comfylang has a standard library.
-- `*T` is a pointer to `T` (recursive, e.g. `**T`). `&x` takes the address of a local (only bare identifiers so far); `*p` dereferences, and works both to read (`let y = *p;`) and, as the direct target of `=`, to write (`*p = v;`). `$syscall` arguments may be pointers as well as integers, for passing buffer addresses.
-- `[T; N]` is a fixed-size array of `T`. Array literals (`[e1, e2, ...]`) are the only way to create one right now, and only as a `let`/`let mut` initializer (not a general expression yet); the length and element type are inferred from the literal. Indexing (`arr[i]`) works for both reads and, on a `mut` array, writes (`arr[i] = v;`) - the address is computed at runtime (`base + i * elem_size`), with no bounds checking yet. Arrays live as locals only for now, not as function parameters or return values.
+**Structs, arrays & pointers:**
+
+```rust
+// examples/structs/nested.cfy (trimmed)
+struct Point {
+    x: int,
+    y: int,
+}
+
+fn main() {
+    let mut p = Point { x: 1, y: 2 };
+    p.x = p.x + 4; // 5
+
+    let mut nums = [10, 20, 30];
+    nums[1] = 99;
+
+    let mut total = 0;
+    let mut out = &total;
+    *out = p.x + p.y + nums[0] + nums[1] + nums[2]; // 5+2+10+99+30 = 146
+
+    $syscall(1, total, 0, 0, 0, 0, 0); // exit 146
+}
+```
 
 More examples in [`examples/`](./examples).
 
-## Design goals
+## Language reference
 
-- Manual memory management, structs, pointers, full type safety.
-- Turing-complete, self-hosted: the compiler will eventually be rewritten in comfylang itself.
-- Hand-written backend, ARM32 first, with x86 and others planned via a `Backend` trait.
-- Compile-time optimizations (constant folding, dead-code elimination, and more) once an IR exists.
-- A custom package manager down the line, managing both compiler versions and dependencies.
+**Variables**
+- `let NAME = expr;` is an immutable binding. When `expr` is provably constant it's folded away entirely (zero runtime cost); otherwise it falls back to a real, immutable stack slot.
+- `let mut NAME = expr;` is always a real stack-allocated local that can be reassigned with `NAME = expr;`.
+
+**Arithmetic & comparisons**
+- `+ - * / %` and unary `-` are constant-folded when possible; runtime arithmetic falls back to a simple stack-machine codegen. Runtime (non-constant) `/` and `%` aren't supported yet - arm32 has no hardware divide instruction and the compiler is `-nostdlib`, so it can't call into libgcc for a software fallback.
+- `== != < <= > >=` produce a real `bool`, and can't be chained (`a < b < c` doesn't parse).
+
+**Control flow**
+- `if`/`else`/`else if`, `while`. Conditions must be `bool` - comfy does not implicitly convert integers to booleans.
+- `&& || !` are genuine short-circuiting logical operators.
+
+**Functions**
+- Typed parameters (`int`/`bool` so far) and an optional `-> Type` return; omitting it means the function returns `()`.
+- Functions must end with a `return` statement if they return a value. Calls follow the AAPCS calling convention (up to 4 arguments in `r0`-`r3`, return value in `r0`), and recursion works.
+
+**Pointers**
+- `*T` is a pointer to `T` (recursive, e.g. `**T`).
+- `&x` takes the address of a local (only bare identifiers so far); `*p` dereferences, and works both to read (`let y = *p;`) and, as the direct target of `=`, to write (`*p = v;`).
+
+**Arrays**
+- `[T; N]` is a fixed-size array of `T`. Array literals (`[e1, e2, ...]`) are the only way to create one, and only as a `let`/`let mut` initializer (not a general expression yet); length and element type are inferred from the literal.
+- Indexing (`arr[i]`) works for both reads and, on a `mut` array, writes (`arr[i] = v;`) - the address is computed at runtime (`base + i * elem_size`), with no bounds checking yet. Locals only, not function parameters or return values.
+
+**Structs**
+- `struct Name { field: Type, ... }` declares a struct, forward-declared like functions (order-independent).
+- Struct literals (`Name { field: value, ... }`) work like array literals - only as a `let`/`let mut` initializer, fields in any order but all required.
+- Field access (`s.field`, chainable as `s.a.b.c`) works for reads and, on a `mut` struct, writes, and composes with arrays (`s.arr[i]`).
+- A struct can't contain itself by value (infinite size) - only through a pointer (`*Name`), same as recursive data structures in C. Locals only, not function parameters or return values.
+
+**Syscalls**
+- `$syscall(nr, a0, a1, a2, a3, a4, a5)` is the sole compiler intrinsic, usable as a statement or an expression (its return value, from `r0`, can be captured). It maps directly onto the Linux ARM EABI syscall convention. Arguments may be pointers as well as integers, for passing buffer addresses. Named wrappers like `write`/`read`/`exit` will come back as ordinary standard-library functions once comfylang has a standard library.
 
 ## Roadmap
 
@@ -98,6 +119,6 @@ Planned, in rough order:
 6. ~~User-defined functions, calling convention, recursion~~ ✅
 7. ~~Pointers (`*T`, `&x`, `*p`)~~ ✅
 8. ~~Arrays (`[T; N]`, indexing)~~ ✅
-9. `struct`s
+9. ~~`struct`s~~ ✅
 10. IR + optimization passes
 11. Additional backends (x86_64, ...), standard library, self-hosting prep

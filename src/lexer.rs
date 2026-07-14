@@ -40,6 +40,7 @@ pub enum TokenKind {
     Bang,
     AndAnd,
     OrOr,
+    Amp,
 
     Eof,
 }
@@ -120,12 +121,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 if bytes.get(i + 1) == Some(&b'&') {
                     push(&mut tokens, TokenKind::AndAnd, &mut i, 2);
                 } else {
-                    return Err(Diagnostic::error(
-                        "unexpected character '&' (bitwise '&' isn't supported yet - did you mean '&&'?)",
-                        Span::new(i, i + 1),
-                    ));
+                    push(&mut tokens, TokenKind::Amp, &mut i, 1);
                 }
             }
+
             '|' => {
                 if bytes.get(i + 1) == Some(&b'|') {
                     push(&mut tokens, TokenKind::OrOr, &mut i, 2);

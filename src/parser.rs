@@ -89,6 +89,33 @@ impl<'a> Parser<'a> {
             let span = start.to(inner.span());
             return Ok(TypeName::Pointer(Box::new(inner), span));
         }
+        if self.at(&TokenKind::LBracket) {
+            self.advance();
+            let elem = self.parse_type_name()?;
+            self.expect(&TokenKind::Semicolon)?;
+
+            let len_span = self.span();
+            let len = match &self.current().kind {
+                TokenKind::Int(n) if *n > 0 => {
+                    let n = *n;
+                    self.advance();
+                    n as u32
+                }
+                other => {
+                    return Err(Diagnostic::error(
+                        format!(
+                            "expected a positive integer array length, found {:?}",
+                            other
+                        ),
+                        len_span,
+                    ));
+                }
+            };
+
+            let end = self.span();
+            self.expect(&TokenKind::RBracket)?;
+            return Ok(TypeName::Array(Box::new(elem), len, start.to(end)));
+        }
         let span = self.span();
         let name = self.expect_ident()?;
         Ok(TypeName::Named(name, span))
@@ -173,6 +200,10 @@ impl<'a> Parser<'a> {
                 operand,
                 ..
             } => Ok(AssignTarget::Deref(*operand)),
+            Expr::Index { base, index, .. } => Ok(AssignTarget::Index {
+                base: *base,
+                index: *index,
+            }),
             other => {
                 let span = other.span();
                 Err(Diagnostic::error("invalid assignment target", span))
@@ -434,7 +465,27 @@ impl<'a> Parser<'a> {
                 span: start.to(ident_span),
             });
         }
-        self.parse_primary()
+        self.parse_postfix()
+    }
+
+    /// Consumes a primary expression, then repeatedly folds in any
+    /// following `[index]` - e.g. `arr[i]`, or (once nested arrays exist)
+    /// `arr[i][j]`.
+    fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
+        let mut expr = self.parse_primary()?;
+        while self.at(&TokenKind::LBracket) {
+            let start = expr.span();
+            self.advance();
+            let index = self.parse_expr()?;
+            let end = self.span();
+            self.expect(&TokenKind::RBracket)?;
+            expr = Expr::Index {
+                base: Box::new(expr),
+                index: Box::new(index),
+                span: start.to(end),
+            };
+        }
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
@@ -459,6 +510,32 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_expr()?;
                 self.expect(&TokenKind::RParen)?;
                 Ok(inner)
+            }
+            TokenKind::LBracket => {
+                self.advance();
+                let mut elements = Vec::new();
+                while !self.at(&TokenKind::RBracket) {
+                    elements.push(self.parse_expr()?);
+                    if self.at(&TokenKind::Comma) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                let end = self.span();
+                self.expect(&TokenKind::RBracket)?;
+
+                if elements.is_empty() {
+                    return Err(Diagnostic::error(
+                        "array literal cannot be empty",
+                        span.to(end),
+                    ));
+                }
+
+                Ok(Expr::ArrayLit {
+                    elements,
+                    span: span.to(end),
+                })
             }
             TokenKind::Intrinsic(name) => {
                 let name = name.clone();

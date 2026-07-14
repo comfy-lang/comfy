@@ -1,5 +1,6 @@
 use crate::ast::{
-    BinOp, CompareOp, Expr, FunctionDef, LogicalOp, Param, Program, Stmt, TypeName, UnaryOp,
+    AssignTarget, BinOp, CompareOp, Expr, FunctionDef, LogicalOp, Param, Program, Stmt, TypeName,
+    UnaryOp,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Token, TokenKind};
@@ -14,10 +15,6 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn peek_next(&self) -> &TokenKind {
-        &self.tokens[self.pos + 1].kind
-    }
-
     fn parse_program(&mut self) -> Result<Program, Diagnostic> {
         let mut functions = Vec::new();
 
@@ -76,7 +73,7 @@ impl<'a> Parser<'a> {
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
         let ty = self.parse_type_name()?;
-        let end = ty.span;
+        let end = ty.span();
         Ok(Param {
             name,
             ty,
@@ -85,9 +82,16 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type_name(&mut self) -> Result<TypeName, Diagnostic> {
+        let start = self.span();
+        if self.at(&TokenKind::Star) {
+            self.advance();
+            let inner = self.parse_type_name()?;
+            let span = start.to(inner.span());
+            return Ok(TypeName::Pointer(Box::new(inner), span));
+        }
         let span = self.span();
         let name = self.expect_ident()?;
-        Ok(TypeName { name, span })
+        Ok(TypeName::Named(name, span))
     }
 
     fn parse_block(&mut self) -> Result<(Vec<Stmt>, Span), Diagnostic> {
@@ -104,13 +108,10 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         match &self.current().kind {
             TokenKind::Let => self.parse_let_stmt(),
-            TokenKind::Ident(_) if self.peek_next() == &TokenKind::Equals => {
-                self.parse_assign_stmt()
-            }
             TokenKind::If => self.parse_if_stmt(),
             TokenKind::While => self.parse_while_stmt(),
             TokenKind::Return => self.parse_return_stmt(),
-            _ => self.parse_expr_stmt(),
+            _ => self.parse_expr_or_assign_stmt(),
         }
     }
 
@@ -139,19 +140,44 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_assign_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+    fn parse_expr_or_assign_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.span();
-        let name = self.expect_ident()?;
-        self.expect(&TokenKind::Equals)?;
-        let value = self.parse_expr()?;
+        let expr = self.parse_expr()?;
+
+        if self.at(&TokenKind::Equals) {
+            self.advance();
+            let target = Self::expr_to_assign_target(expr)?;
+            let value = self.parse_expr()?;
+            let end = self.span();
+            self.expect(&TokenKind::Semicolon)?;
+            return Ok(Stmt::Assign {
+                target,
+                value,
+                span: start.to(end),
+            });
+        }
+
         let end = self.span();
         self.expect(&TokenKind::Semicolon)?;
-
-        Ok(Stmt::Assign {
-            name,
-            value,
+        Ok(Stmt::Expr {
+            value: expr,
             span: start.to(end),
         })
+    }
+
+    fn expr_to_assign_target(expr: Expr) -> Result<AssignTarget, Diagnostic> {
+        match expr {
+            Expr::Ident(name, _) => Ok(AssignTarget::Name(name)),
+            Expr::Unary {
+                op: UnaryOp::Deref,
+                operand,
+                ..
+            } => Ok(AssignTarget::Deref(*operand)),
+            other => {
+                let span = other.span();
+                Err(Diagnostic::error("invalid assignment target", span))
+            }
+        }
     }
 
     fn parse_if_stmt(&mut self) -> Result<Stmt, Diagnostic> {
@@ -396,6 +422,27 @@ impl<'a> Parser<'a> {
                 op: UnaryOp::Not,
                 operand: Box::new(operand),
                 span,
+            });
+        }
+        if self.at(&TokenKind::Star) {
+            let start = self.span();
+            self.advance();
+            let operand = self.parse_unary()?;
+            let span = start.to(operand.span());
+            return Ok(Expr::Unary {
+                op: UnaryOp::Deref,
+                operand: Box::new(operand),
+                span,
+            });
+        }
+        if self.at(&TokenKind::Amp) {
+            let start = self.span();
+            self.advance();
+            let ident_span = self.span();
+            let name = self.expect_ident()?;
+            return Ok(Expr::AddressOf {
+                name,
+                span: start.to(ident_span),
             });
         }
         self.parse_primary()

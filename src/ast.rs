@@ -2,15 +2,25 @@
 
 use crate::diag::Span;
 
-pub struct TypeName {
-    pub name: String,
-    pub span: Span,
+pub enum TypeName {
+    Named(String, Span),
+    Pointer(Box<TypeName>, Span),
+}
+
+impl TypeName {
+    pub fn span(&self) -> Span {
+        match self {
+            TypeName::Named(_, span) => *span,
+            TypeName::Pointer(_, span) => *span,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 pub enum UnaryOp {
-    Neg, // -x
-    Not, // !x
+    Neg,   // -x
+    Not,   // !x
+    Deref, // *x
 }
 
 #[derive(Clone, Copy)]
@@ -76,6 +86,10 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    AddressOf {
+        name: String,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -90,8 +104,14 @@ impl Expr {
             Expr::Logical { span, .. } => *span,
             Expr::Syscall { span, .. } => *span,
             Expr::Call { span, .. } => *span,
+            Expr::AddressOf { span, .. } => *span,
         }
     }
+}
+
+pub enum AssignTarget {
+    Name(String),
+    Deref(Expr),
 }
 
 pub enum Stmt {
@@ -103,7 +123,7 @@ pub enum Stmt {
     },
 
     Assign {
-        name: String,
+        target: AssignTarget,
         value: Expr,
         span: Span,
     },

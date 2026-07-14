@@ -25,6 +25,7 @@ pub enum TokenKind {
     RBracket,
     Comma,
     Colon,
+    Dot,
     Semicolon,
     Equals,
     EqEq,
@@ -80,6 +81,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ']' => push(&mut tokens, TokenKind::RBracket, &mut i, 1),
             ',' => push(&mut tokens, TokenKind::Comma, &mut i, 1),
             ':' => push(&mut tokens, TokenKind::Colon, &mut i, 1),
+            '.' => push(&mut tokens, TokenKind::Dot, &mut i, 1),
             ';' => push(&mut tokens, TokenKind::Semicolon, &mut i, 1),
             '=' => {
                 if bytes.get(i + 1) == Some(&b'=') {

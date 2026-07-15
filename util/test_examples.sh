@@ -29,6 +29,7 @@ EXAMPLES=(
   "examples/variables/mutability.cfy|41"
   "examples/variables/syscall_expr.cfy|0"
   "examples/variables/syscall_expr_pid.cfy|skip"
+  "examples/optimization/opt_control_flow.cfy|42"
 )
 
 echo "Building comfyc..."

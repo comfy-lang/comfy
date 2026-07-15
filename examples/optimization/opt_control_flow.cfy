@@ -1,0 +1,14 @@
+fn main() {
+    let y = 10;
+    let mut sum = add_numbers(5, y);
+
+    if sum > 10 {
+        sum = 5;
+    }
+
+    $syscall(1, 42, 0, 0, 0, 0, 0); // exit 42
+}
+
+fn add_numbers(a: int, b: int) -> int {
+    return a + b;
+}

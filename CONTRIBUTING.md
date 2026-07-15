@@ -45,7 +45,7 @@ ARM32 (`arm-none-eabi` or similar) assembler/linker and `qemu-arm` on your `PATH
 3. If you add or change language surface (new syntax, new semantics), add a short
    example under [`examples/`](./examples) and update the "Current language surface"
    section of `README.md`.
-4. Make sure `cargo build` succeeds before opening a PR.
+4. Make sure `cargo build` succeeds and `util/test_examples.sh` passes before opening a PR (CI checks both).
 5. Fill out the PR template, including which `area:` the change belongs to.
 
 ## Reporting bugs

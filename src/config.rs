@@ -15,7 +15,12 @@ pub struct TargetSection {
 
 impl Default for ProjectConfig {
     fn default() -> Self {
-        Self { target: TargetSection { arch: "arm32".to_string(), output: None } }
+        Self {
+            target: TargetSection {
+                arch: "arm32".to_string(),
+                output: None,
+            },
+        }
     }
 }
 

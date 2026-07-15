@@ -1,8 +1,8 @@
-use crate::sema::CheckedProgram;
+use crate::ir::Program;
 
 pub mod arm32;
 
 pub trait Backend {
     fn name(&self) -> &'static str;
-    fn emit(&self, program: &CheckedProgram) -> String;
+    fn emit(&self, program: &Program) -> String;
 }

@@ -6,6 +6,7 @@ mod ast;
 mod codegen;
 mod config;
 mod diag;
+mod ir;
 mod lexer;
 mod parser;
 mod sema;
@@ -56,7 +57,8 @@ fn main() {
         std::process::exit(1);
     });
 
-    let assembly = backend.emit(&checked);
+    let ir_program = ir::lower(&checked);
+    let assembly = backend.emit(&ir_program);
 
     let file_stem = input_path.file_stem().unwrap_or_default().to_string_lossy();
     let output_path = PathBuf::from(
@@ -66,11 +68,11 @@ fn main() {
             .unwrap_or_else(|| format!("build/{}.s", file_stem)),
     );
 
-    if let Some(parent) = output_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("error: could not create {}: {}", parent.display(), e);
-            std::process::exit(1);
-        }
+    if let Some(parent) = output_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("error: could not create {}: {}", parent.display(), e);
+        std::process::exit(1);
     }
 
     match std::fs::write(&output_path, assembly) {

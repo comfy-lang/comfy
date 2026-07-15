@@ -9,6 +9,7 @@ mod diag;
 mod ir;
 mod lexer;
 mod parser;
+mod regalloc;
 mod sema;
 
 fn main() {

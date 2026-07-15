@@ -68,11 +68,11 @@ fn main() {
             .unwrap_or_else(|| format!("build/{}.s", file_stem)),
     );
 
-    if let Some(parent) = output_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("error: could not create {}: {}", parent.display(), e);
-            std::process::exit(1);
-        }
+    if let Some(parent) = output_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("error: could not create {}: {}", parent.display(), e);
+        std::process::exit(1);
     }
 
     match std::fs::write(&output_path, assembly) {

@@ -8,6 +8,7 @@ mod config;
 mod diag;
 mod ir;
 mod lexer;
+mod opt;
 mod parser;
 mod sema;
 
@@ -57,7 +58,8 @@ fn main() {
         std::process::exit(1);
     });
 
-    let ir_program = ir::lower(&checked);
+    let mut ir_program = ir::lower(&checked);
+    opt::optimize(&mut ir_program);
     let assembly = backend.emit(&ir_program);
 
     let file_stem = input_path.file_stem().unwrap_or_default().to_string_lossy();

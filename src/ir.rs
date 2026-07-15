@@ -92,6 +92,94 @@ pub enum Instr {
     Return(Option<VReg>),
 }
 
+impl Instr {
+    /// The virtual register this instruction defines (writes to), if any.
+    pub fn def(&self) -> Option<VReg> {
+        match self {
+            Instr::Const { dst, .. }
+            | Instr::Copy { dst, .. }
+            | Instr::Unary { dst, .. }
+            | Instr::Binary { dst, .. }
+            | Instr::Compare { dst, .. }
+            | Instr::LoadLocal { dst, .. }
+            | Instr::LoadIndexed { dst, .. }
+            | Instr::AddressOf { dst, .. }
+            | Instr::Load { dst, .. }
+            | Instr::Syscall { dst, .. } => Some(*dst),
+            Instr::Call { dst, .. } => *dst,
+            Instr::StoreLocal { .. }
+            | Instr::StoreIndexed { .. }
+            | Instr::Store { .. }
+            | Instr::Label(_)
+            | Instr::Jump(_)
+            | Instr::JumpIfZero { .. }
+            | Instr::JumpIfNotZero { .. }
+            | Instr::Return(_) => None,
+        }
+    }
+
+    /// Visits every virtual register this instruction *reads*.
+    pub fn for_each_use(&self, mut f: impl FnMut(VReg)) {
+        match self {
+            Instr::Const { .. } | Instr::LoadLocal { .. } | Instr::AddressOf { .. } => {}
+            Instr::Copy { src, .. } => f(*src),
+            Instr::Unary { src, .. } => f(*src),
+            Instr::Binary { lhs, rhs, .. } | Instr::Compare { lhs, rhs, .. } => {
+                f(*lhs);
+                f(*rhs);
+            }
+            Instr::StoreLocal { src, .. } => f(*src),
+            Instr::LoadIndexed { index, .. } => f(*index),
+            Instr::StoreIndexed { index, src, .. } => {
+                f(*index);
+                f(*src);
+            }
+            Instr::Load { addr, .. } => f(*addr),
+            Instr::Store { addr, src } => {
+                f(*addr);
+                f(*src);
+            }
+            Instr::Syscall { args, .. } => {
+                for a in args {
+                    f(*a);
+                }
+            }
+            Instr::Call { args, .. } => {
+                for a in args {
+                    f(*a);
+                }
+            }
+            Instr::Label(_) | Instr::Jump(_) => {}
+            Instr::JumpIfZero { cond, .. } | Instr::JumpIfNotZero { cond, .. } => f(*cond),
+            Instr::Return(v) => {
+                if let Some(v) = v {
+                    f(*v);
+                }
+            }
+        }
+    }
+
+    /// Whether this instruction is safe to delete outright when its result
+    /// is never used. `Syscall` and `Call` are deliberately excluded even
+    /// though they have a `dst` - they may perform I/O or other observable
+    /// side effects, so they must always run regardless of whether their
+    /// result is read.
+    pub fn is_pure(&self) -> bool {
+        matches!(
+            self,
+            Instr::Const { .. }
+                | Instr::Copy { .. }
+                | Instr::Unary { .. }
+                | Instr::Binary { .. }
+                | Instr::Compare { .. }
+                | Instr::LoadLocal { .. }
+                | Instr::LoadIndexed { .. }
+                | Instr::AddressOf { .. }
+                | Instr::Load { .. }
+        )
+    }
+}
+
 pub struct Function {
     pub name: String,
     pub is_entry: bool,

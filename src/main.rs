@@ -10,6 +10,7 @@ mod ir;
 mod lexer;
 mod opt;
 mod parser;
+mod regalloc;
 mod sema;
 
 fn main() {

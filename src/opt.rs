@@ -2,7 +2,7 @@
 
 use crate::ast;
 use crate::ir::{Function, Instr, Program};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub fn optimize(program: &mut Program) {
     for function in &mut program.functions {
@@ -25,36 +25,30 @@ fn optimize_function(function: &mut Function) {
     }
 }
 
-/// Tracks which virtual registers are known, at this point in the program,
-/// to hold a specific compile-time-constant value, and rewrites any
-/// instruction whose inputs are all constant into a plain `Const`. Safe to
-/// run unconditionally: virtual registers are assigned exactly once, so a
-/// fact "vN == constant" is true for the rest of the function once recorded
-/// - unlike a stack slot, a VReg can never be overwritten with something
-/// else later.
 fn propagate_constants(body: &mut [Instr], vreg_count: u32) -> bool {
-    let mut known: Vec<Option<i64>> = vec![None; vreg_count as usize];
+    let mut known_vregs: Vec<Option<i64>> = vec![None; vreg_count as usize];
+    let mut known_locals: HashMap<usize, i64> = HashMap::new();
     let mut changed = false;
 
     for instr in body.iter_mut() {
         match instr {
             Instr::Const { dst, value } => {
-                known[dst.0 as usize] = Some(*value);
+                known_vregs[dst.0 as usize] = Some(*value);
             }
 
             Instr::Copy { dst, src } => {
-                if let Some(value) = known[src.0 as usize] {
-                    known[dst.0 as usize] = Some(value);
+                if let Some(value) = known_vregs[src.0 as usize] {
+                    known_vregs[dst.0 as usize] = Some(value);
                     *instr = Instr::Const { dst: *dst, value };
                     changed = true;
                 }
             }
 
             Instr::Unary { dst, op, src } => {
-                if let Some(value) = known[src.0 as usize]
+                if let Some(value) = known_vregs[src.0 as usize]
                     && let Some(folded) = fold_unary(*op, value)
                 {
-                    known[dst.0 as usize] = Some(folded);
+                    known_vregs[dst.0 as usize] = Some(folded);
                     *instr = Instr::Const {
                         dst: *dst,
                         value: folded,
@@ -64,10 +58,11 @@ fn propagate_constants(body: &mut [Instr], vreg_count: u32) -> bool {
             }
 
             Instr::Binary { dst, op, lhs, rhs } => {
-                if let (Some(l), Some(r)) = (known[lhs.0 as usize], known[rhs.0 as usize])
+                if let (Some(l), Some(r)) =
+                    (known_vregs[lhs.0 as usize], known_vregs[rhs.0 as usize])
                     && let Some(folded) = fold_binary(*op, l, r)
                 {
-                    known[dst.0 as usize] = Some(folded);
+                    known_vregs[dst.0 as usize] = Some(folded);
                     *instr = Instr::Const {
                         dst: *dst,
                         value: folded,
@@ -77,15 +72,49 @@ fn propagate_constants(body: &mut [Instr], vreg_count: u32) -> bool {
             }
 
             Instr::Compare { dst, op, lhs, rhs } => {
-                if let (Some(l), Some(r)) = (known[lhs.0 as usize], known[rhs.0 as usize]) {
+                if let (Some(l), Some(r)) =
+                    (known_vregs[lhs.0 as usize], known_vregs[rhs.0 as usize])
+                {
                     let result = fold_compare(*op, l, r);
-                    known[dst.0 as usize] = Some(result);
+                    known_vregs[dst.0 as usize] = Some(result);
                     *instr = Instr::Const {
                         dst: *dst,
                         value: result,
                     };
                     changed = true;
                 }
+            }
+
+            Instr::LoadLocal { dst, offset } => {
+                if let Some(&value) = known_locals.get(offset) {
+                    known_vregs[dst.0 as usize] = Some(value);
+                    *instr = Instr::Const { dst: *dst, value };
+                    changed = true;
+                }
+            }
+
+            Instr::StoreLocal { offset, src } => match known_vregs[src.0 as usize] {
+                Some(value) => {
+                    known_locals.insert(*offset, value);
+                }
+                None => {
+                    known_locals.remove(offset);
+                }
+            },
+
+            // Control-flow join we can't reason about with a flat
+            // instruction list - forget everything we assumed about locals.
+            Instr::Label(_) => known_locals.clear(),
+
+            // Writes through a raw pointer or an unchecked index could touch
+            // any local in the frame; a call or syscall could write through
+            // a pointer argument internally. None of these are analyzable
+            // here, so conservatively forget every tracked local.
+            Instr::Store { .. }
+            | Instr::StoreIndexed { .. }
+            | Instr::Call { .. }
+            | Instr::Syscall { .. } => {
+                known_locals.clear();
             }
 
             _ => {}

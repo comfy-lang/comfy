@@ -1,0 +1,6 @@
+fn main() {
+    let mut x = 5;
+    x = x + 3;
+    let y = x * 2;
+    $syscall(1, y, 0, 0, 0, 0, 0); // exit 16
+}

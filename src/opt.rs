@@ -11,12 +11,10 @@ pub fn optimize(program: &mut Program) {
 }
 
 fn optimize_function(function: &mut Function) {
-    // Each pass can expose new opportunities for the others (e.g. folding
-    // a Binary into a Const can make its old operands unused), so iterate
-    // to a fixpoint.
     loop {
         let mut changed = false;
         changed |= propagate_constants(&mut function.body, function.vreg_count);
+        changed |= fold_branches(&mut function.body, function.vreg_count);
         changed |= remove_unused_pure_instrs(&mut function.body);
         changed |= remove_unreachable_code(&mut function.body);
         if !changed {
@@ -26,6 +24,7 @@ fn optimize_function(function: &mut Function) {
 }
 
 fn propagate_constants(body: &mut [Instr], vreg_count: u32) -> bool {
+    let multi = multiply_defined_vregs(body);
     let mut known_vregs: Vec<Option<i64>> = vec![None; vreg_count as usize];
     let mut known_locals: HashMap<usize, i64> = HashMap::new();
     let mut changed = false;
@@ -33,11 +32,15 @@ fn propagate_constants(body: &mut [Instr], vreg_count: u32) -> bool {
     for instr in body.iter_mut() {
         match instr {
             Instr::Const { dst, value } => {
-                known_vregs[dst.0 as usize] = Some(*value);
+                if !multi.contains(&dst.0) {
+                    known_vregs[dst.0 as usize] = Some(*value);
+                }
             }
 
             Instr::Copy { dst, src } => {
-                if let Some(value) = known_vregs[src.0 as usize] {
+                if !multi.contains(&dst.0)
+                    && let Some(value) = known_vregs[src.0 as usize]
+                {
                     known_vregs[dst.0 as usize] = Some(value);
                     *instr = Instr::Const { dst: *dst, value };
                     changed = true;
@@ -162,6 +165,60 @@ fn fold_compare(op: ast::CompareOp, lhs: i64, rhs: i64) -> i64 {
     result as i64
 }
 
+enum BranchDecision {
+    AlwaysJump(String),
+    NeverJump,
+    Unknown,
+}
+
+/// Simplifies a conditional jump whose condition is a compile-time constant
+/// into either an unconditional `Jump` or nothing at all.
+fn fold_branches(body: &mut Vec<Instr>, vreg_count: u32) -> bool {
+    let multi = multiply_defined_vregs(body);
+    let mut known: Vec<Option<i64>> = vec![None; vreg_count as usize];
+    let mut changed = false;
+    let mut i = 0;
+
+    while i < body.len() {
+        let decision = match &body[i] {
+            Instr::Const { dst, value } => {
+                if !multi.contains(&dst.0) {
+                    known[dst.0 as usize] = Some(*value);
+                }
+                BranchDecision::Unknown
+            }
+            Instr::JumpIfZero { cond, label } => match known[cond.0 as usize] {
+                Some(0) => BranchDecision::AlwaysJump(label.clone()),
+                Some(_) => BranchDecision::NeverJump,
+                None => BranchDecision::Unknown,
+            },
+            Instr::JumpIfNotZero { cond, label } => match known[cond.0 as usize] {
+                Some(v) if v != 0 => BranchDecision::AlwaysJump(label.clone()),
+                Some(_) => BranchDecision::NeverJump,
+                None => BranchDecision::Unknown,
+            },
+            _ => BranchDecision::Unknown,
+        };
+
+        match decision {
+            BranchDecision::AlwaysJump(label) => {
+                body[i] = Instr::Jump(label);
+                changed = true;
+                i += 1;
+            }
+            BranchDecision::NeverJump => {
+                body.remove(i);
+                changed = true;
+            }
+            BranchDecision::Unknown => {
+                i += 1;
+            }
+        }
+    }
+
+    changed
+}
+
 /// Drops any pure instruction whose result is never read by a later
 /// instruction in the function.
 fn remove_unused_pure_instrs(body: &mut Vec<Instr>) -> bool {
@@ -181,18 +238,36 @@ fn remove_unused_pure_instrs(body: &mut Vec<Instr>) -> bool {
     body.len() != before
 }
 
-/// Drops instructions that can never execute: anything between an
-/// unconditional `Jump`/`Return` and the next `Label`.
 fn remove_unreachable_code(body: &mut Vec<Instr>) -> bool {
     let before = body.len();
+
+    // A label only "rescues" code out of the unreachable state if it's
+    // actually targeted by some jump in this function - otherwise reaching
+    // it would require falling through from code already proven dead.
+    let mut referenced: HashSet<String> = HashSet::new();
+    for instr in body.iter() {
+        match instr {
+            Instr::Jump(label)
+            | Instr::JumpIfZero { label, .. }
+            | Instr::JumpIfNotZero { label, .. } => {
+                referenced.insert(label.clone());
+            }
+            _ => {}
+        }
+    }
+
     let mut result = Vec::with_capacity(body.len());
     let mut unreachable = false;
 
     for instr in body.drain(..) {
-        match instr {
-            Instr::Label(_) => {
-                unreachable = false;
-                result.push(instr);
+        match &instr {
+            Instr::Label(name) => {
+                if referenced.contains(name) {
+                    unreachable = false;
+                }
+                if !unreachable {
+                    result.push(instr);
+                }
             }
             _ if unreachable => {} // drop it
             Instr::Jump(_) | Instr::Return(_) => {
@@ -205,4 +280,24 @@ fn remove_unreachable_code(body: &mut Vec<Instr>) -> bool {
 
     *body = result;
     body.len() != before
+}
+
+/// Virtual registers written by more than one instruction. Almost every
+/// vreg has exactly one definition site (lowering always allocates a fresh
+/// one via `new_vreg()`) - the one exception is `&&`/`||`, which reuse a
+/// single `dst` across two instructions on two different control-flow
+/// paths. A flat, flow-insensitive forward scan can't safely reason about
+/// those: which instruction "wins" depends on which path executes, so such
+/// a vreg must never be treated as provably constant.
+fn multiply_defined_vregs(body: &[Instr]) -> HashSet<u32> {
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut multi: HashSet<u32> = HashSet::new();
+    for instr in body {
+        if let Some(dst) = instr.def()
+            && !seen.insert(dst.0)
+        {
+            multi.insert(dst.0);
+        }
+    }
+    multi
 }

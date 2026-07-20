@@ -1,7 +1,7 @@
 //! IR-level optimization passes, run after lowering and before codegen.
 
 use crate::ast;
-use crate::ir::{Function, Instr, Program};
+use crate::ir::{Function, Instr, Program, VReg};
 use std::collections::{HashMap, HashSet};
 
 pub fn optimize(program: &mut Program) {
@@ -28,6 +28,7 @@ fn propagate_constants(body: &mut [Instr], vreg_count: u32) -> bool {
     let multi = multiply_defined_vregs(body);
     let mut known_vregs: Vec<Option<i64>> = vec![None; vreg_count as usize];
     let mut known_locals: HashMap<usize, i64> = HashMap::new();
+    let mut known_local_vregs: HashMap<usize, VReg> = HashMap::new();
     let mut changed = false;
 
     for instr in body.iter_mut() {
@@ -94,21 +95,35 @@ fn propagate_constants(body: &mut [Instr], vreg_count: u32) -> bool {
                     known_vregs[dst.0 as usize] = Some(value);
                     *instr = Instr::Const { dst: *dst, value };
                     changed = true;
+                } else if let Some(&src) = known_local_vregs.get(offset) {
+                    let dst = *dst;
+                    let offset = *offset;
+                    *instr = Instr::Copy { dst, src };
+                    known_local_vregs.insert(offset, dst);
+                    changed = true;
+                } else {
+                    known_local_vregs.insert(*offset, *dst);
                 }
             }
 
-            Instr::StoreLocal { offset, src } => match known_vregs[src.0 as usize] {
-                Some(value) => {
-                    known_locals.insert(*offset, value);
+            Instr::StoreLocal { offset, src } => {
+                match known_vregs[src.0 as usize] {
+                    Some(value) => {
+                        known_locals.insert(*offset, value);
+                    }
+                    None => {
+                        known_locals.remove(offset);
+                    }
                 }
-                None => {
-                    known_locals.remove(offset);
-                }
-            },
+                known_local_vregs.insert(*offset, *src);
+            }
 
             // Control-flow join we can't reason about with a flat
             // instruction list - forget everything we assumed about locals.
-            Instr::Label(_) => known_locals.clear(),
+            Instr::Label(_) => {
+                known_locals.clear();
+                known_local_vregs.clear();
+            }
 
             // Writes through a raw pointer or an unchecked index could touch
             // any local in the frame; a call or syscall could write through
@@ -119,6 +134,7 @@ fn propagate_constants(body: &mut [Instr], vreg_count: u32) -> bool {
             | Instr::Call { .. }
             | Instr::Syscall { .. } => {
                 known_locals.clear();
+                known_local_vregs.clear();
             }
 
             _ => {}

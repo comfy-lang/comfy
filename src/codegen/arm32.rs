@@ -283,6 +283,17 @@ impl Emitter {
                 self.out.push_str("\tstr r1, [r0]\n");
             }
 
+            ir::Instr::TailCall { name, args } => {
+                let regs = ["r0", "r1", "r2", "r3"];
+                for (reg, arg) in regs.iter().zip(args) {
+                    self.load(reg, *arg);
+                }
+                self.out.push_str("\tmov sp, fp\n");
+                self.out
+                    .push_str(&format!("\tpop {{{}}}\n", self.saved_regs));
+                self.out.push_str(&format!("\tb {}\n", label_for(name)));
+            }
+
             ir::Instr::Syscall { dst, args } => {
                 self.load("r7", args[0]);
                 let regs = ["r0", "r1", "r2", "r3", "r4", "r5"];

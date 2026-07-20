@@ -82,7 +82,10 @@ pub enum Instr {
         name: String,
         args: Vec<VReg>,
     },
-
+    TailCall {
+        name: String,
+        args: Vec<VReg>,
+    },
     Label(String),
     Jump(String),
     JumpIfZero {
@@ -115,6 +118,7 @@ impl Instr {
             Instr::StoreLocal { .. }
             | Instr::StoreIndexed { .. }
             | Instr::Store { .. }
+            | Instr::TailCall { .. }
             | Instr::Label(_)
             | Instr::Jump(_)
             | Instr::JumpIfZero { .. }
@@ -143,6 +147,11 @@ impl Instr {
             Instr::Store { addr, src } => {
                 f(*addr);
                 f(*src);
+            }
+            Instr::TailCall { args, .. } => {
+                for a in args {
+                    f(*a);
+                }
             }
             Instr::Syscall { args, .. } => {
                 for a in args {

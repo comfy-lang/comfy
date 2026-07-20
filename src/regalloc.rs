@@ -71,6 +71,11 @@ fn for_each_vreg(instr: &Instr, mut f: impl FnMut(VReg)) {
             f(*addr);
             f(*src);
         }
+        Instr::TailCall { args, .. } => {
+            for a in args {
+                f(*a);
+            }
+        }
         Instr::Syscall { dst, args } => {
             f(*dst);
             for a in args {

@@ -14,12 +14,13 @@ fn optimize_function(function: &mut Function) {
     loop {
         let mut changed = false;
         changed |= propagate_constants(&mut function.body, function.vreg_count);
-        changed |= strength_reduce(&mut function.body, function.vreg_count); // NEW
+        changed |= strength_reduce(&mut function.body, function.vreg_count);
         changed |= fold_branches(&mut function.body, function.vreg_count);
         changed |= eliminate_common_subexprs(&mut function.body);
         changed |= remove_dead_stores(&mut function.body);
         changed |= remove_unused_pure_instrs(&mut function.body);
         changed |= remove_unreachable_code(&mut function.body);
+        changed |= convert_tail_calls(&mut function.body); // NEW
         if !changed {
             break;
         }
@@ -289,7 +290,7 @@ fn remove_unreachable_code(body: &mut Vec<Instr>) -> bool {
                 }
             }
             _ if unreachable => {} // drop it
-            Instr::Jump(_) | Instr::Return(_) => {
+            Instr::Jump(_) | Instr::Return(_) | Instr::TailCall { .. } => {
                 unreachable = true;
                 result.push(instr);
             }
@@ -538,6 +539,44 @@ fn strength_reduce(body: &mut [Instr], vreg_count: u32) -> bool {
             }
             _ => {}
         }
+    }
+
+    changed
+}
+
+/// Collapses `Call` immediately followed by a `Return` of that exact
+/// call's result (or a discarded-result call followed by a bare `Return`)
+/// into a single `TailCall`. Since a `return` statement always ends the
+/// function wherever it appears, any `Call` directly preceding one is
+/// already in tail position - no further reachability analysis needed.
+fn convert_tail_calls(body: &mut Vec<Instr>) -> bool {
+    let mut changed = false;
+    let mut i = 0;
+
+    while i + 1 < body.len() {
+        let is_tail_call = match (&body[i], &body[i + 1]) {
+            (
+                Instr::Call {
+                    dst: Some(call_dst),
+                    ..
+                },
+                Instr::Return(Some(ret_v)),
+            ) => call_dst == ret_v,
+            (Instr::Call { dst: None, .. }, Instr::Return(None)) => true,
+            _ => false,
+        };
+
+        if is_tail_call {
+            body.remove(i + 1); // the Return
+            let call = body.remove(i);
+            let Instr::Call { name, args, .. } = call else {
+                unreachable!("`is_tail_call` only true when body[i] was Instr::Call")
+            };
+            body.insert(i, Instr::TailCall { name, args });
+            changed = true;
+        }
+
+        i += 1;
     }
 
     changed

@@ -1,0 +1,11 @@
+fn count_down(n: int) -> int {
+    if n <= 0 {
+        return 0;
+    }
+    return count_down(n - 1);
+}
+
+fn main() {
+    let r = count_down(2000000); // would overflow the stack without TCO
+    $syscall(1, r, 0, 0, 0, 0, 0); // exit 0
+}

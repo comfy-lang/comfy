@@ -20,7 +20,7 @@ fn main() {
     let mut overwritten = 5;
     overwritten = 6;
 
-    let tail = count_down(2000000);
+    let tail = count_down(200);
 
     let doubled_tail = tail + tail;
 

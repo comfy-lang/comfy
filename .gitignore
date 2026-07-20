@@ -6,3 +6,4 @@ result
 result-*
 .direnv/flake-profile
 .direnv/flake-profile-1-link
+*.core

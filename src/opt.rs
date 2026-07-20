@@ -15,6 +15,7 @@ fn optimize_function(function: &mut Function) {
         let mut changed = false;
         changed |= propagate_constants(&mut function.body, function.vreg_count);
         changed |= fold_branches(&mut function.body, function.vreg_count);
+        changed |= eliminate_common_subexprs(&mut function.body); // NEW
         changed |= remove_dead_stores(&mut function.body);
         changed |= remove_unused_pure_instrs(&mut function.body);
         changed |= remove_unreachable_code(&mut function.body);
@@ -362,4 +363,74 @@ fn remove_dead_stores(body: &mut Vec<Instr>) -> bool {
     });
 
     body.len() != before
+}
+
+/// Key identifying a pure computation by its operator and operand vregs.
+/// Two instructions with the same key are guaranteed to produce the same
+/// result: our IR only gives a vreg a second definition in the `&&`/`||`
+/// case, and even then, by the time that vreg is *read* again its value is
+/// already fixed for the remainder of straight-line code (the two
+/// definitions live on mutually exclusive control-flow paths that have
+/// already resolved into one by the join point) - so operand identity here
+/// is as good as an SSA guarantee.
+#[derive(PartialEq, Eq, Hash)]
+enum CseKey {
+    Unary(ast::UnaryOp, u32),
+    Binary(ast::BinOp, u32, u32),
+    Compare(ast::CompareOp, u32, u32),
+}
+
+/// Replaces a pure computation with a `Copy` from an earlier instruction
+/// that already computed the exact same thing, within the same
+/// straight-line run of code (bounded by the same invalidation points used
+/// elsewhere: a `Label` control-flow join, or any instruction whose effects
+/// on memory we can't fully reason about).
+fn eliminate_common_subexprs(body: &mut Vec<Instr>) -> bool {
+    let mut available: HashMap<CseKey, VReg> = HashMap::new();
+    let mut changed = false;
+
+    for instr in body.iter_mut() {
+        match instr {
+            Instr::Unary { dst, op, src } => {
+                let key = CseKey::Unary(*op, src.0);
+                if let Some(&existing) = available.get(&key) {
+                    let dst = *dst;
+                    *instr = Instr::Copy { dst, src: existing };
+                    changed = true;
+                } else {
+                    available.insert(key, *dst);
+                }
+            }
+            Instr::Binary { dst, op, lhs, rhs } => {
+                let key = CseKey::Binary(*op, lhs.0, rhs.0);
+                if let Some(&existing) = available.get(&key) {
+                    let dst = *dst;
+                    *instr = Instr::Copy { dst, src: existing };
+                    changed = true;
+                } else {
+                    available.insert(key, *dst);
+                }
+            }
+            Instr::Compare { dst, op, lhs, rhs } => {
+                let key = CseKey::Compare(*op, lhs.0, rhs.0);
+                if let Some(&existing) = available.get(&key) {
+                    let dst = *dst;
+                    *instr = Instr::Copy { dst, src: existing };
+                    changed = true;
+                } else {
+                    available.insert(key, *dst);
+                }
+            }
+            Instr::Label(_)
+            | Instr::Store { .. }
+            | Instr::StoreIndexed { .. }
+            | Instr::Call { .. }
+            | Instr::Syscall { .. } => {
+                available.clear();
+            }
+            _ => {}
+        }
+    }
+
+    changed
 }

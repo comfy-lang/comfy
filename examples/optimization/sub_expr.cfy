@@ -1,0 +1,6 @@
+fn main() {
+    let x = 3;
+    let y = 4;
+    let a = (x + y) * (x + y);
+    $syscall(1, a, 0, 0, 0, 0, 0); // exit 49
+}

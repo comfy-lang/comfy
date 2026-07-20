@@ -31,6 +31,7 @@ EXAMPLES=(
   "examples/variables/syscall_expr_pid.cfy|skip"
   "examples/optimization/opt_control_flow.cfy|42"
   "examples/optimization/fold_const.cfy|16"
+  "examples/optimization/sub_expr.cfy|49"
 )
 
 echo "Building comfyc..."

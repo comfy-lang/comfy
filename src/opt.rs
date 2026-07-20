@@ -402,7 +402,7 @@ fn resolve(canon: &HashMap<u32, u32>, v: VReg) -> u32 {
 /// register values (which, aside from the `&&`/`||` exception guarded by
 /// `multi`, never change once defined), never memory - so a
 /// `Store`/`Call`/`Syscall` in between can't affect it.
-fn eliminate_common_subexprs(body: &mut Vec<Instr>) -> bool {
+fn eliminate_common_subexprs(body: &mut [Instr]) -> bool {
     let multi = multiply_defined_vregs(body);
     let mut canon: HashMap<u32, u32> = HashMap::new();
     let mut available: HashMap<CseKey, VReg> = HashMap::new();

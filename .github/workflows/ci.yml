@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Set up Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Check formatting
+        run: nix develop --command cargo fmt --check
+
+      - name: Clippy
+        run: nix develop --command cargo clippy -- -D warnings
+
+      - name: Build
+        run: nix develop --command cargo build
+
+      - name: Run example test suite
+        run: nix develop --command util/test_examples.sh

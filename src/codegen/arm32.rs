@@ -1,18 +1,23 @@
 //! ARM32 (armv7, EABI) backend.
 //!
-//! Emits GNU-assembler syntax targeting `arm-linux-gnueabihf`. Syscalls use
-//! the standard EABI convention: syscall number in `r7`, up to 6 arguments
-//! in `r0`-`r5`, trapped with `svc #0`. Function calls follow AAPCS: up to
-//! 4 integer arguments in `r0`-`r3`, return value in `r0`.
-//!
-//! Runtime expressions are evaluated with a simple stack machine: every
-//! `emit_expr` call leaves its result on top of the stack. This is not
-//! optimal codegen (a real register allocator comes later, once there's an
-//! IR), but it's simple and obviously correct.
+//! Emits GNU-assembler syntax targeting `arm-linux-gnueabihf`. Consumes the
+//! flat IR (`crate::ir`) rather than the checked expression tree directly.
+//! Every virtual register gets its own dedicated stack spill slot for now -
+//! this is intentionally "dumb" (equivalent in spirit to the old push/pop
+//! stack machine), just restructured around the new IR. Real register
+//! allocation (mapping hot virtual registers to `r4`-`r11` instead of
+//! memory) is a follow-up step.
 
-use crate::ast;
 use crate::codegen::Backend;
-use crate::sema::{CheckedExpr, CheckedFunction, CheckedProgram, CheckedStmt};
+use crate::ir::{self, VReg};
+use crate::regalloc::Location;
+use crate::{ast, regalloc};
+
+/// Physical registers available for the linear-scan allocator to hand out.
+/// Excluded: r0-r5 (used as internal scratch by various `Instr` cases,
+/// e.g. syscalls need r0-r5 simultaneously), r7 (hard-wired syscall
+/// number register), r11/fp (our frame pointer).
+const ALLOCATABLE_REGS: [&str; 4] = ["r6", "r8", "r9", "r10"];
 
 pub struct Arm32Backend;
 
@@ -21,11 +26,13 @@ impl Backend for Arm32Backend {
         "arm32"
     }
 
-    fn emit(&self, program: &CheckedProgram) -> String {
+    fn emit(&self, program: &ir::Program) -> String {
         let mut emitter = Emitter {
             out: String::new(),
-            label_counter: 0,
             return_label: None,
+            vreg_base: 0,
+            locations: Vec::new(),
+            saved_regs: String::new(),
         };
 
         emitter.out.push_str(".global _start\n");
@@ -35,7 +42,7 @@ impl Backend for Arm32Backend {
             emitter.emit_function(function);
         }
 
-        emitter.out
+        crate::codegen::strip_redundant_movs(&emitter.out)
     }
 }
 
@@ -46,39 +53,92 @@ fn label_for(name: &str) -> &str {
     if name == "main" { "_start" } else { name }
 }
 
-/// Bundles the output buffer with a monotonic counter for generating
-/// unique, deterministic labels (`.Lif_end0`, `.Lwhile_start1`, ...), plus
-/// the current function's epilogue label for `return` to jump to.
 struct Emitter {
     out: String,
-    label_counter: usize,
     return_label: Option<String>,
+    vreg_base: usize,
+    /// Where each virtual register currently lives, computed fresh per
+    /// function by the register allocator.
+    locations: Vec<Location>,
+    /// The exact `push {...}`/`pop {...}` register list used in this
+    /// function's prologue, so the epilogue can mirror it exactly.
+    saved_regs: String,
 }
 
 impl Emitter {
-    fn new_label(&mut self, prefix: &str) -> String {
-        let label = format!(".L{}{}", prefix, self.label_counter);
-        self.label_counter += 1;
-        label
+    fn spill_offset(&self, slot: usize) -> usize {
+        self.vreg_base + 4 * (slot + 1)
     }
 
-    fn emit_function(&mut self, function: &CheckedFunction) {
-        let is_entry = function.name == "main";
+    fn load(&mut self, reg: &str, v: VReg) {
+        match self.locations[v.0 as usize] {
+            Location::Register(slot) => {
+                let src = ALLOCATABLE_REGS[slot as usize];
+                if src != reg {
+                    self.out.push_str(&format!("\tmov {}, {}\n", reg, src));
+                }
+            }
+            Location::Spill(slot) => {
+                let offset = self.spill_offset(slot);
+                self.out
+                    .push_str(&format!("\tldr {}, [fp, #-{}]\n", reg, offset));
+            }
+        }
+    }
+
+    fn store(&mut self, reg: &str, v: VReg) {
+        match self.locations[v.0 as usize] {
+            Location::Register(slot) => {
+                let dst = ALLOCATABLE_REGS[slot as usize];
+                if dst != reg {
+                    self.out.push_str(&format!("\tmov {}, {}\n", dst, reg));
+                }
+            }
+            Location::Spill(slot) => {
+                let offset = self.spill_offset(slot);
+                self.out
+                    .push_str(&format!("\tstr {}, [fp, #-{}]\n", reg, offset));
+            }
+        }
+    }
+
+    fn emit_function(&mut self, function: &ir::Function) {
+        let allocation = regalloc::allocate(
+            &function.body,
+            function.vreg_count,
+            ALLOCATABLE_REGS.len() as u32,
+        );
+        self.vreg_base = function.frame_size;
+        let total_frame = function.frame_size + 4 * allocation.spill_count;
+        self.locations = allocation.locations;
+
+        let used_regs: Vec<&str> = ALLOCATABLE_REGS
+            .iter()
+            .zip(&allocation.used_registers)
+            .filter_map(|(reg, &used)| used.then_some(*reg))
+            .collect();
+
         self.out
             .push_str(&format!("{}:\n", label_for(&function.name)));
 
-        if is_entry {
-            if function.frame_size > 0 {
-                let aligned = (function.frame_size + 7) & !7;
+        if function.is_entry {
+            if total_frame > 0 {
+                let aligned = (total_frame + 7) & !7;
                 self.out.push_str("\tmov fp, sp\n");
                 self.out.push_str(&format!("\tsub sp, sp, #{}\n", aligned));
             }
             self.return_label = None;
         } else {
-            self.out.push_str("\tpush {fp, lr}\n");
+            self.saved_regs = if used_regs.is_empty() {
+                "fp, lr".to_string()
+            } else {
+                format!("{}, fp, lr", used_regs.join(", "))
+            };
+            self.out
+                .push_str(&format!("\tpush {{{}}}\n", self.saved_regs));
             self.out.push_str("\tmov fp, sp\n");
-            if function.frame_size > 0 {
-                let aligned = (function.frame_size + 7) & !7;
+            if total_frame > 0 {
+                let aligned = (total_frame + 7) & !7;
                 self.out.push_str(&format!("\tsub sp, sp, #{}\n", aligned));
             }
             self.return_label = Some(format!(".Lret_{}", function.name));
@@ -90,154 +150,44 @@ impl Emitter {
                 .push_str(&format!("\tstr {}, [fp, #-{}]\n", reg, offset));
         }
 
-        for stmt in &function.body {
-            self.emit_stmt(stmt);
+        for instr in &function.body {
+            self.emit_instr(instr);
         }
 
         if let Some(label) = self.return_label.clone() {
             self.out.push_str(&format!("{}:\n", label));
             self.out.push_str("\tmov sp, fp\n");
-            self.out.push_str("\tpop {fp, lr}\n");
+            self.out
+                .push_str(&format!("\tpop {{{}}}\n", self.saved_regs));
             self.out.push_str("\tbx lr\n");
         }
     }
 
-    fn emit_stmt(&mut self, stmt: &CheckedStmt) {
-        match stmt {
-            CheckedStmt::Store { offset, value } => {
-                self.emit_expr(value);
-                self.out.push_str("\tpop {r0}\n");
-                self.out
-                    .push_str(&format!("\tstr r0, [fp, #-{}]\n", offset));
-            }
-
-            CheckedStmt::Expr(value) => {
-                self.emit_expr(value);
-                self.out.push_str("\tpop {r0}\n"); // discard the result, we only wanted the side effect
-            }
-
-            CheckedStmt::If {
-                cond,
-                then_body,
-                else_body,
-            } => {
-                self.emit_expr(cond);
-                self.out.push_str("\tpop {r0}\n");
-                self.out.push_str("\tcmp r0, #0\n");
-
-                let end_label = self.new_label("if_end");
-
-                if let Some(else_body) = else_body {
-                    let else_label = self.new_label("if_else");
-                    self.out.push_str(&format!("\tbeq {}\n", else_label));
-                    for stmt in then_body {
-                        self.emit_stmt(stmt);
-                    }
-                    self.out.push_str(&format!("\tb {}\n", end_label));
-                    self.out.push_str(&format!("{}:\n", else_label));
-                    for stmt in else_body {
-                        self.emit_stmt(stmt);
-                    }
-                } else {
-                    self.out.push_str(&format!("\tbeq {}\n", end_label));
-                    for stmt in then_body {
-                        self.emit_stmt(stmt);
-                    }
-                }
-
-                self.out.push_str(&format!("{}:\n", end_label));
-            }
-
-            CheckedStmt::While { cond, body } => {
-                let start_label = self.new_label("while_start");
-                let end_label = self.new_label("while_end");
-
-                self.out.push_str(&format!("{}:\n", start_label));
-                self.emit_expr(cond);
-                self.out.push_str("\tpop {r0}\n");
-                self.out.push_str("\tcmp r0, #0\n");
-                self.out.push_str(&format!("\tbeq {}\n", end_label));
-
-                for stmt in body {
-                    self.emit_stmt(stmt);
-                }
-
-                self.out.push_str(&format!("\tb {}\n", start_label));
-                self.out.push_str(&format!("{}:\n", end_label));
-            }
-
-            CheckedStmt::Return(value) => {
-                if let Some(value) = value {
-                    self.emit_expr(value);
-                    self.out.push_str("\tpop {r0}\n");
-                }
-                let label = self
-                    .return_label
-                    .clone()
-                    .expect("'return' should only appear inside a function body");
-                self.out.push_str(&format!("\tb {}\n", label));
-            }
-
-            CheckedStmt::StoreThroughPointer { address, value } => {
-                self.emit_expr(address);
-                self.emit_expr(value);
-                self.out.push_str("\tpop {r1}\n"); // value (pushed last, popped first)
-                self.out.push_str("\tpop {r0}\n"); // address
-                self.out.push_str("\tstr r1, [r0]\n");
-            }
-
-            CheckedStmt::StoreIndexed {
-                base_offset,
-                index,
-                elem_size,
-                value,
-            } => {
-                self.emit_expr(index);
-                self.emit_expr(value);
-                self.out.push_str("\tpop {r3}\n"); // value (pushed last, popped first)
-                self.out.push_str("\tpop {r1}\n"); // index
-                self.out.push_str(&format!("\tmov r2, #{}\n", elem_size));
-                self.out.push_str("\tmul r1, r2, r1\n"); // r1 = index * elem_size
-                self.out
-                    .push_str(&format!("\tsub r0, fp, #{}\n", base_offset));
-                self.out.push_str("\tsub r0, r0, r1\n"); // r0 = address of arr[index]
-                self.out.push_str("\tstr r3, [r0]\n");
-            }
-        }
-    }
-
-    /// Evaluates `expr`, leaving the result on top of the stack.
-    fn emit_expr(&mut self, expr: &CheckedExpr) {
-        match expr {
-            CheckedExpr::Const(value) => {
+    fn emit_instr(&mut self, instr: &ir::Instr) {
+        match instr {
+            ir::Instr::Const { dst, value } => {
                 self.out.push_str(&format!("\tldr r0, ={}\n", value));
-                self.out.push_str("\tpush {r0}\n");
+                self.store("r0", *dst);
             }
 
-            CheckedExpr::Local(offset) => {
-                self.out
-                    .push_str(&format!("\tldr r0, [fp, #-{}]\n", offset));
-                self.out.push_str("\tpush {r0}\n");
+            ir::Instr::Copy { dst, src } => {
+                self.load("r0", *src);
+                self.store("r0", *dst);
             }
 
-            CheckedExpr::Unary { op, operand } => {
-                self.emit_expr(operand);
-                self.out.push_str("\tpop {r0}\n");
+            ir::Instr::Unary { dst, op, src } => {
+                self.load("r0", *src);
                 match op {
                     ast::UnaryOp::Neg => self.out.push_str("\trsb r0, r0, #0\n"),
                     ast::UnaryOp::Not => self.out.push_str("\teor r0, r0, #1\n"),
-                    ast::UnaryOp::Deref => {
-                        unreachable!("Deref is lowered to CheckedExpr::Deref, not Unary")
-                    }
+                    ast::UnaryOp::Deref => unreachable!("Deref lowers to ir::Instr::Load"),
                 }
-                self.out.push_str("\tpush {r0}\n");
+                self.store("r0", *dst);
             }
 
-            CheckedExpr::Binary { op, lhs, rhs } => {
-                self.emit_expr(lhs);
-                self.emit_expr(rhs);
-                self.out.push_str("\tpop {r1}\n");
-                self.out.push_str("\tpop {r0}\n");
+            ir::Instr::Binary { dst, op, lhs, rhs } => {
+                self.load("r0", *lhs);
+                self.load("r1", *rhs);
                 match op {
                     ast::BinOp::Add => self.out.push_str("\tadd r0, r0, r1\n"),
                     ast::BinOp::Sub => self.out.push_str("\tsub r0, r0, r1\n"),
@@ -246,14 +196,12 @@ impl Emitter {
                         unreachable!("division/remainder should have been rejected in sema")
                     }
                 }
-                self.out.push_str("\tpush {r0}\n");
+                self.store("r0", *dst);
             }
 
-            CheckedExpr::Compare { op, lhs, rhs } => {
-                self.emit_expr(lhs);
-                self.emit_expr(rhs);
-                self.out.push_str("\tpop {r1}\n");
-                self.out.push_str("\tpop {r0}\n");
+            ir::Instr::Compare { dst, op, lhs, rhs } => {
+                self.load("r0", *lhs);
+                self.load("r1", *rhs);
                 self.out.push_str("\tcmp r0, r1\n");
                 self.out.push_str("\tmov r0, #0\n");
                 let cond = match op {
@@ -265,102 +213,137 @@ impl Emitter {
                     ast::CompareOp::Ge => "movge",
                 };
                 self.out.push_str(&format!("\t{} r0, #1\n", cond));
-                self.out.push_str("\tpush {r0}\n");
+                self.store("r0", *dst);
             }
 
-            CheckedExpr::Logical { op, lhs, rhs } => match op {
-                ast::LogicalOp::And => {
-                    let false_label = self.new_label("and_false");
-                    let end_label = self.new_label("and_end");
-
-                    self.emit_expr(lhs);
-                    self.out.push_str("\tpop {r0}\n");
-                    self.out.push_str("\tcmp r0, #0\n");
-                    self.out.push_str(&format!("\tbeq {}\n", false_label));
-
-                    self.emit_expr(rhs);
-                    self.out.push_str("\tpop {r0}\n");
-                    self.out.push_str(&format!("\tb {}\n", end_label));
-
-                    self.out.push_str(&format!("{}:\n", false_label));
-                    self.out.push_str("\tmov r0, #0\n");
-
-                    self.out.push_str(&format!("{}:\n", end_label));
-                    self.out.push_str("\tpush {r0}\n");
-                }
-                ast::LogicalOp::Or => {
-                    let true_label = self.new_label("or_true");
-                    let end_label = self.new_label("or_end");
-
-                    self.emit_expr(lhs);
-                    self.out.push_str("\tpop {r0}\n");
-                    self.out.push_str("\tcmp r0, #0\n");
-                    self.out.push_str(&format!("\tbne {}\n", true_label));
-
-                    self.emit_expr(rhs);
-                    self.out.push_str("\tpop {r0}\n");
-                    self.out.push_str(&format!("\tb {}\n", end_label));
-
-                    self.out.push_str(&format!("{}:\n", true_label));
-                    self.out.push_str("\tmov r0, #1\n");
-
-                    self.out.push_str(&format!("{}:\n", end_label));
-                    self.out.push_str("\tpush {r0}\n");
-                }
-            },
-
-            CheckedExpr::Syscall { args } => {
-                for arg in args.iter() {
-                    self.emit_expr(arg);
-                }
-                self.out.push_str("\tpop {r5}\n");
-                self.out.push_str("\tpop {r4}\n");
-                self.out.push_str("\tpop {r3}\n");
-                self.out.push_str("\tpop {r2}\n");
-                self.out.push_str("\tpop {r1}\n");
-                self.out.push_str("\tpop {r0}\n");
-                self.out.push_str("\tpop {r7}\n");
-                self.out.push_str("\tsvc #0\n");
-                self.out.push_str("\tpush {r0}\n");
+            ir::Instr::Shl { dst, src, shift } => {
+                self.load("r0", *src);
+                self.out.push_str(&format!("\tlsl r0, r0, #{}\n", shift));
+                self.store("r0", *dst);
             }
 
-            CheckedExpr::Call { name, args } => {
-                for arg in args {
-                    self.emit_expr(arg);
-                }
-                for i in (0..args.len()).rev() {
-                    self.out.push_str(&format!("\tpop {{r{}}}\n", i));
-                }
-                self.out.push_str(&format!("\tbl {}\n", label_for(name)));
-                self.out.push_str("\tpush {r0}\n");
+            ir::Instr::LoadLocal { dst, offset } => {
+                self.out
+                    .push_str(&format!("\tldr r0, [fp, #-{}]\n", offset));
+                self.store("r0", *dst);
             }
 
-            CheckedExpr::AddressOf(offset) => {
-                self.out.push_str(&format!("\tsub r0, fp, #{}\n", offset));
-                self.out.push_str("\tpush {r0}\n");
+            ir::Instr::StoreLocal { offset, src } => {
+                self.load("r0", *src);
+                self.out
+                    .push_str(&format!("\tstr r0, [fp, #-{}]\n", offset));
             }
 
-            CheckedExpr::Deref(inner) => {
-                self.emit_expr(inner);
-                self.out.push_str("\tpop {r0}\n");
-                self.out.push_str("\tldr r0, [r0]\n");
-                self.out.push_str("\tpush {r0}\n");
-            }
-
-            CheckedExpr::Index {
+            ir::Instr::LoadIndexed {
+                dst,
                 base_offset,
                 index,
                 elem_size,
             } => {
-                self.emit_expr(index);
-                self.out.push_str("\tpop {r1}\n"); // index
+                self.load("r1", *index);
                 self.out.push_str(&format!("\tmov r2, #{}\n", elem_size));
-                self.out.push_str("\tmul r1, r2, r1\n"); // r1 = index * elem_size
+                self.out.push_str("\tmul r1, r2, r1\n");
                 self.out
                     .push_str(&format!("\tsub r0, fp, #{}\n", base_offset));
-                self.out.push_str("\tsub r0, r0, r1\n"); // r0 = address of arr[index]
+                self.out.push_str("\tsub r0, r0, r1\n");
                 self.out.push_str("\tldr r0, [r0]\n");
-                self.out.push_str("\tpush {r0}\n");
+                self.store("r0", *dst);
+            }
+
+            ir::Instr::StoreIndexed {
+                base_offset,
+                index,
+                elem_size,
+                src,
+            } => {
+                self.load("r1", *index);
+                self.load("r3", *src);
+                self.out.push_str(&format!("\tmov r2, #{}\n", elem_size));
+                self.out.push_str("\tmul r1, r2, r1\n");
+                self.out
+                    .push_str(&format!("\tsub r0, fp, #{}\n", base_offset));
+                self.out.push_str("\tsub r0, r0, r1\n");
+                self.out.push_str("\tstr r3, [r0]\n");
+            }
+
+            ir::Instr::AddressOf { dst, offset } => {
+                self.out.push_str(&format!("\tsub r0, fp, #{}\n", offset));
+                self.store("r0", *dst);
+            }
+
+            ir::Instr::Load { dst, addr } => {
+                self.load("r0", *addr);
+                self.out.push_str("\tldr r0, [r0]\n");
+                self.store("r0", *dst);
+            }
+
+            ir::Instr::Store { addr, src } => {
+                self.load("r0", *addr);
+                self.load("r1", *src);
+                self.out.push_str("\tstr r1, [r0]\n");
+            }
+
+            ir::Instr::TailCall { name, args } => {
+                let regs = ["r0", "r1", "r2", "r3"];
+                for (reg, arg) in regs.iter().zip(args) {
+                    self.load(reg, *arg);
+                }
+                self.out.push_str("\tmov sp, fp\n");
+                self.out
+                    .push_str(&format!("\tpop {{{}}}\n", self.saved_regs));
+                self.out.push_str(&format!("\tb {}\n", label_for(name)));
+            }
+
+            ir::Instr::Syscall { dst, args } => {
+                self.load("r7", args[0]);
+                let regs = ["r0", "r1", "r2", "r3", "r4", "r5"];
+                for (reg, arg) in regs.iter().zip(&args[1..]) {
+                    self.load(reg, *arg);
+                }
+                self.out.push_str("\tsvc #0\n");
+                self.store("r0", *dst);
+            }
+
+            ir::Instr::Call { dst, name, args } => {
+                let regs = ["r0", "r1", "r2", "r3"];
+                for (reg, arg) in regs.iter().zip(args) {
+                    self.load(reg, *arg);
+                }
+                self.out.push_str(&format!("\tbl {}\n", label_for(name)));
+                if let Some(dst) = dst {
+                    self.store("r0", *dst);
+                }
+            }
+
+            ir::Instr::Label(label) => {
+                self.out.push_str(&format!("{}:\n", label));
+            }
+
+            ir::Instr::Jump(label) => {
+                self.out.push_str(&format!("\tb {}\n", label));
+            }
+
+            ir::Instr::JumpIfZero { cond, label } => {
+                self.load("r0", *cond);
+                self.out.push_str("\tcmp r0, #0\n");
+                self.out.push_str(&format!("\tbeq {}\n", label));
+            }
+
+            ir::Instr::JumpIfNotZero { cond, label } => {
+                self.load("r0", *cond);
+                self.out.push_str("\tcmp r0, #0\n");
+                self.out.push_str(&format!("\tbne {}\n", label));
+            }
+
+            ir::Instr::Return(value) => {
+                if let Some(v) = value {
+                    self.load("r0", *v);
+                }
+                let label = self
+                    .return_label
+                    .clone()
+                    .expect("'return' should only appear inside a function body");
+                self.out.push_str(&format!("\tb {}\n", label));
             }
         }
     }

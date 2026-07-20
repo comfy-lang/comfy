@@ -14,8 +14,9 @@ fn optimize_function(function: &mut Function) {
     loop {
         let mut changed = false;
         changed |= propagate_constants(&mut function.body, function.vreg_count);
+        changed |= strength_reduce(&mut function.body, function.vreg_count); // NEW
         changed |= fold_branches(&mut function.body, function.vreg_count);
-        changed |= eliminate_common_subexprs(&mut function.body); // NEW
+        changed |= eliminate_common_subexprs(&mut function.body);
         changed |= remove_dead_stores(&mut function.body);
         changed |= remove_unused_pure_instrs(&mut function.body);
         changed |= remove_unreachable_code(&mut function.body);
@@ -365,19 +366,12 @@ fn remove_dead_stores(body: &mut Vec<Instr>) -> bool {
     body.len() != before
 }
 
-/// Key identifying a pure computation by its operator and operand vregs.
-/// Two instructions with the same key are guaranteed to produce the same
-/// result: our IR only gives a vreg a second definition in the `&&`/`||`
-/// case, and even then, by the time that vreg is *read* again its value is
-/// already fixed for the remainder of straight-line code (the two
-/// definitions live on mutually exclusive control-flow paths that have
-/// already resolved into one by the join point) - so operand identity here
-/// is as good as an SSA guarantee.
 #[derive(PartialEq, Eq, Hash)]
 enum CseKey {
     Unary(ast::UnaryOp, u32),
     Binary(ast::BinOp, u32, u32),
     Compare(ast::CompareOp, u32, u32),
+    Shl(u32, u32), // (resolved src, shift amount)
 }
 
 /// Resolves a vreg to the earliest vreg proven to hold the exact same
@@ -451,9 +445,96 @@ fn eliminate_common_subexprs(body: &mut Vec<Instr>) -> bool {
                     available.insert(key, *dst);
                 }
             }
+            Instr::Shl { dst, src, shift } => {
+                let key = CseKey::Shl(resolve(&canon, *src), *shift);
+                if let Some(&existing) = available.get(&key) {
+                    let dst = *dst;
+                    *instr = Instr::Copy { dst, src: existing };
+                    changed = true;
+                } else {
+                    available.insert(key, *dst);
+                }
+            }
             Instr::Label(_) => {
                 available.clear();
                 canon.clear();
+            }
+            _ => {}
+        }
+    }
+
+    changed
+}
+
+enum Reduced {
+    Const(i64),
+    Copy(VReg),
+    Shl(VReg, u32),
+}
+
+fn is_power_of_two(value: i64) -> bool {
+    value > 0 && (value & (value - 1)) == 0
+}
+
+/// Given one operand's known constant `value` and the other (unknown)
+/// operand `other`, decides how to rewrite `other * value` more cheaply -
+/// or `None` if `value` isn't a special case worth rewriting.
+fn reduce_mul(value: i64, other: VReg) -> Option<Reduced> {
+    if value == 0 {
+        Some(Reduced::Const(0))
+    } else if value == 1 {
+        Some(Reduced::Copy(other))
+    } else if is_power_of_two(value) {
+        Some(Reduced::Shl(other, value.trailing_zeros()))
+    } else {
+        None
+    }
+}
+
+/// Rewrites a multiply by a compile-time-known power of two (or the
+/// degenerate `*0`/`*1` cases) into a cheaper equivalent. ARM's `mul`
+/// instruction can't take an immediate operand at all, so a multiply by a
+/// runtime-unknown value against a literal already has to load that
+/// literal into a register first - this saves an instruction whenever it
+/// applies, not just cycles.
+fn strength_reduce(body: &mut [Instr], vreg_count: u32) -> bool {
+    let multi = multiply_defined_vregs(body);
+    let mut known_vregs: Vec<Option<i64>> = vec![None; vreg_count as usize];
+    let mut changed = false;
+
+    for instr in body.iter_mut() {
+        match instr {
+            Instr::Const { dst, value } => {
+                if !multi.contains(&dst.0) {
+                    known_vregs[dst.0 as usize] = Some(*value);
+                }
+            }
+            Instr::Copy { dst, src } => {
+                if !multi.contains(&dst.0)
+                    && let Some(value) = known_vregs[src.0 as usize]
+                {
+                    known_vregs[dst.0 as usize] = Some(value);
+                }
+            }
+            Instr::Binary {
+                dst,
+                op: ast::BinOp::Mul,
+                lhs,
+                rhs,
+            } => {
+                let reduced = known_vregs[rhs.0 as usize]
+                    .and_then(|v| reduce_mul(v, *lhs))
+                    .or_else(|| known_vregs[lhs.0 as usize].and_then(|v| reduce_mul(v, *rhs)));
+
+                if let Some(new_instr) = reduced {
+                    let dst = *dst;
+                    *instr = match new_instr {
+                        Reduced::Const(value) => Instr::Const { dst, value },
+                        Reduced::Copy(src) => Instr::Copy { dst, src },
+                        Reduced::Shl(src, shift) => Instr::Shl { dst, src, shift },
+                    };
+                    changed = true;
+                }
             }
             _ => {}
         }

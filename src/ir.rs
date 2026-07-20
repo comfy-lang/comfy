@@ -35,7 +35,11 @@ pub enum Instr {
         lhs: VReg,
         rhs: VReg,
     },
-
+    Shl {
+        dst: VReg,
+        src: VReg,
+        shift: u32,
+    },
     LoadLocal {
         dst: VReg,
         offset: usize,
@@ -101,6 +105,7 @@ impl Instr {
             | Instr::Unary { dst, .. }
             | Instr::Binary { dst, .. }
             | Instr::Compare { dst, .. }
+            | Instr::Shl { dst, .. }
             | Instr::LoadLocal { dst, .. }
             | Instr::LoadIndexed { dst, .. }
             | Instr::AddressOf { dst, .. }
@@ -123,7 +128,7 @@ impl Instr {
         match self {
             Instr::Const { .. } | Instr::LoadLocal { .. } | Instr::AddressOf { .. } => {}
             Instr::Copy { src, .. } => f(*src),
-            Instr::Unary { src, .. } => f(*src),
+            Instr::Unary { src, .. } | Instr::Shl { src, .. } => f(*src),
             Instr::Binary { lhs, rhs, .. } | Instr::Compare { lhs, rhs, .. } => {
                 f(*lhs);
                 f(*rhs);

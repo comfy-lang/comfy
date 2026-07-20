@@ -216,6 +216,12 @@ impl Emitter {
                 self.store("r0", *dst);
             }
 
+            ir::Instr::Shl { dst, src, shift } => {
+                self.load("r0", *src);
+                self.out.push_str(&format!("\tlsl r0, r0, #{}\n", shift));
+                self.store("r0", *dst);
+            }
+
             ir::Instr::LoadLocal { dst, offset } => {
                 self.out
                     .push_str(&format!("\tldr r0, [fp, #-{}]\n", offset));

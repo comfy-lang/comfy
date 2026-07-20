@@ -1,0 +1,8 @@
+fn scale(x: int) -> int {
+    return x * 8;
+}
+
+fn main() {
+    let r = scale(5); // 40
+    $syscall(1, r, 0, 0, 0, 0, 0);
+}

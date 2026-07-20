@@ -32,6 +32,7 @@ EXAMPLES=(
   "examples/optimization/opt_control_flow.cfy|42"
   "examples/optimization/fold_const.cfy|16"
   "examples/optimization/sub_expr.cfy|49"
+  "examples/optimization/repeat_shifts.cfy|40"
 )
 
 echo "Building comfyc..."

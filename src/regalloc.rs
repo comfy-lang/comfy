@@ -38,7 +38,7 @@ fn for_each_vreg(instr: &Instr, mut f: impl FnMut(VReg)) {
             f(*dst);
             f(*src);
         }
-        Instr::Unary { dst, src, .. } => {
+        Instr::Unary { dst, src, .. } | Instr::Shl { dst, src, .. } => {
             f(*dst);
             f(*src);
         }

@@ -107,6 +107,21 @@ More examples in [`examples/`](./examples).
 **Syscalls**
 - `$syscall(nr, a0, a1, a2, a3, a4, a5)` is the sole compiler intrinsic, usable as a statement or an expression (its return value, from `r0`, can be captured). It maps directly onto the Linux ARM EABI syscall convention. Arguments may be pointers as well as integers, for passing buffer addresses. Named wrappers like `write`/`read`/`exit` will come back as ordinary standard-library functions once comfylang has a standard library.
 
+## Optimizations
+
+`comfyc` lowers checked ASTs to a flat, three-address IR before codegen, and runs the following passes on it to a fixpoint, entirely at compile time:
+
+- **Constant propagation** - through virtual registers and stack-local slots alike; a `let` binding that's provably constant is folded away entirely.
+- **Redundant load elimination** - a repeated read of an unmodified local becomes a cheap register copy instead of a stack reload.
+- **Branch folding** - an `if`/`while` condition that folds to a compile-time constant becomes an unconditional jump (or vanishes) instead of a runtime comparison.
+- **Common subexpression elimination** - a repeated computation over unchanged inputs is computed once and reused.
+- **Strength reduction** - multiplying by a compile-time power of two becomes a shift; `*0`/`*1` collapse to their trivial equivalents.
+- **Dead code elimination** - unused pure computations, unread stores, and unreachable code (after a `return`/unconditional jump) are all removed.
+- **Tail-call elimination** - a `return f(...)` in tail position reuses the current stack frame instead of growing the stack, so self-recursive tail calls run in constant space.
+
+Register allocation is a simple linear-scan allocator mapping virtual registers onto a handful of real ARM registers, spilling to the stack only once it runs out.
+
+
 ## Roadmap
 
 Planned, in rough order:
@@ -120,5 +135,5 @@ Planned, in rough order:
 7. ~~Pointers (`*T`, `&x`, `*p`)~~ ✅
 8. ~~Arrays (`[T; N]`, indexing)~~ ✅
 9. ~~`struct`s~~ ✅
-10. IR + optimization passes
+10. ~~IR + optimization passes (constant propagation, dead code/branch/store elimination, CSE, strength reduction, tail calls) + linear-scan register allocation~~ ✅
 11. Additional backends (x86_64, ...), standard library, self-hosting prep

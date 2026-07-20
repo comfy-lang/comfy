@@ -42,7 +42,7 @@ impl Backend for Arm32Backend {
             emitter.emit_function(function);
         }
 
-        emitter.out
+        crate::codegen::strip_redundant_movs(&emitter.out)
     }
 }
 

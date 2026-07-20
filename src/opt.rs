@@ -15,6 +15,7 @@ fn optimize_function(function: &mut Function) {
         let mut changed = false;
         changed |= propagate_constants(&mut function.body, function.vreg_count);
         changed |= fold_branches(&mut function.body, function.vreg_count);
+        changed |= remove_dead_stores(&mut function.body);
         changed |= remove_unused_pure_instrs(&mut function.body);
         changed |= remove_unreachable_code(&mut function.body);
         if !changed {
@@ -300,4 +301,49 @@ fn multiply_defined_vregs(body: &[Instr]) -> HashSet<u32> {
         }
     }
     multi
+}
+
+/// Removes a `StoreLocal` whose value can never be observed: its offset's
+/// address is never taken (so no pointer could alias it), no `LoadLocal`
+/// anywhere in the function ever reads that offset, and it isn't within
+/// the range of any array/struct-field accessed through a runtime index.
+fn remove_dead_stores(body: &mut Vec<Instr>) -> bool {
+    let before = body.len();
+
+    let mut address_taken: HashSet<usize> = HashSet::new();
+    let mut loaded: HashSet<usize> = HashSet::new();
+    let mut indexed_base_offsets: Vec<usize> = Vec::new();
+
+    for instr in body.iter() {
+        match instr {
+            Instr::AddressOf { offset, .. } => {
+                address_taken.insert(*offset);
+            }
+            Instr::LoadLocal { offset, .. } => {
+                loaded.insert(*offset);
+            }
+            Instr::LoadIndexed { base_offset, .. } | Instr::StoreIndexed { base_offset, .. } => {
+                indexed_base_offsets.push(*base_offset);
+            }
+            _ => {}
+        }
+    }
+
+    // Array elements sit at `base_offset + i * elem_size` for increasing
+    // `i`, but the IR doesn't carry the array's length, so we can't know
+    // each array's exact upper bound. Conservatively protect every offset
+    // at or above the smallest indexed base seen - it might be an element
+    // reached via a runtime index we can't reason about further.
+    let indexed_cutoff = indexed_base_offsets.into_iter().min();
+
+    body.retain(|instr| match instr {
+        Instr::StoreLocal { offset, .. } => {
+            address_taken.contains(offset)
+                || loaded.contains(offset)
+                || indexed_cutoff.is_some_and(|cutoff| *offset >= cutoff)
+        }
+        _ => true,
+    });
+
+    body.len() != before
 }

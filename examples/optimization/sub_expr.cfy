@@ -1,6 +1,8 @@
+fn compute(x: int, y: int) -> int {
+    return (x + y) * (x + y);
+}
+
 fn main() {
-    let x = 3;
-    let y = 4;
-    let a = (x + y) * (x + y);
-    $syscall(1, a, 0, 0, 0, 0, 0); // exit 49
+    let r = compute(3, 4);
+    $syscall(1, r, 0, 0, 0, 0, 0); // exit 49
 }

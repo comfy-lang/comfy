@@ -380,19 +380,49 @@ enum CseKey {
     Compare(ast::CompareOp, u32, u32),
 }
 
+/// Resolves a vreg to the earliest vreg proven to hold the exact same
+/// value, by following any `Copy` chain recorded in `canon`.
+fn resolve(canon: &HashMap<u32, u32>, v: VReg) -> u32 {
+    let mut cur = v.0;
+    while let Some(&next) = canon.get(&cur) {
+        cur = next;
+    }
+    cur
+}
+
 /// Replaces a pure computation with a `Copy` from an earlier instruction
-/// that already computed the exact same thing, within the same
-/// straight-line run of code (bounded by the same invalidation points used
-/// elsewhere: a `Label` control-flow join, or any instruction whose effects
-/// on memory we can't fully reason about).
+/// that provably computed the exact same value from the exact same inputs.
+///
+/// Operand identity is checked through `canon`, a same-value chain built
+/// from `Copy` instructions - in particular, the ones our own
+/// store-to-load forwarding in `propagate_constants` introduces. Without
+/// it, two reads of the same unmodified local would look like different
+/// vregs and never match here.
+///
+/// A `Label` clears both caches: it's a control-flow join, and code
+/// reached from a different path may never have executed the earlier
+/// computation at all - reusing its vreg there would read an undefined
+/// register. Nothing else needs to invalidate this pass's state: unlike
+/// `known_locals` in `propagate_constants`, this only reasons about
+/// register values (which, aside from the `&&`/`||` exception guarded by
+/// `multi`, never change once defined), never memory - so a
+/// `Store`/`Call`/`Syscall` in between can't affect it.
 fn eliminate_common_subexprs(body: &mut Vec<Instr>) -> bool {
+    let multi = multiply_defined_vregs(body);
+    let mut canon: HashMap<u32, u32> = HashMap::new();
     let mut available: HashMap<CseKey, VReg> = HashMap::new();
     let mut changed = false;
 
     for instr in body.iter_mut() {
         match instr {
+            Instr::Copy { dst, src } => {
+                if !multi.contains(&dst.0) {
+                    let root = resolve(&canon, *src);
+                    canon.insert(dst.0, root);
+                }
+            }
             Instr::Unary { dst, op, src } => {
-                let key = CseKey::Unary(*op, src.0);
+                let key = CseKey::Unary(*op, resolve(&canon, *src));
                 if let Some(&existing) = available.get(&key) {
                     let dst = *dst;
                     *instr = Instr::Copy { dst, src: existing };
@@ -402,7 +432,7 @@ fn eliminate_common_subexprs(body: &mut Vec<Instr>) -> bool {
                 }
             }
             Instr::Binary { dst, op, lhs, rhs } => {
-                let key = CseKey::Binary(*op, lhs.0, rhs.0);
+                let key = CseKey::Binary(*op, resolve(&canon, *lhs), resolve(&canon, *rhs));
                 if let Some(&existing) = available.get(&key) {
                     let dst = *dst;
                     *instr = Instr::Copy { dst, src: existing };
@@ -412,7 +442,7 @@ fn eliminate_common_subexprs(body: &mut Vec<Instr>) -> bool {
                 }
             }
             Instr::Compare { dst, op, lhs, rhs } => {
-                let key = CseKey::Compare(*op, lhs.0, rhs.0);
+                let key = CseKey::Compare(*op, resolve(&canon, *lhs), resolve(&canon, *rhs));
                 if let Some(&existing) = available.get(&key) {
                     let dst = *dst;
                     *instr = Instr::Copy { dst, src: existing };
@@ -421,12 +451,9 @@ fn eliminate_common_subexprs(body: &mut Vec<Instr>) -> bool {
                     available.insert(key, *dst);
                 }
             }
-            Instr::Label(_)
-            | Instr::Store { .. }
-            | Instr::StoreIndexed { .. }
-            | Instr::Call { .. }
-            | Instr::Syscall { .. } => {
+            Instr::Label(_) => {
                 available.clear();
+                canon.clear();
             }
             _ => {}
         }

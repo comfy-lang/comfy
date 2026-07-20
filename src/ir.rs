@@ -214,10 +214,10 @@ struct Lowering {
 }
 
 impl Lowering {
-    fn new() -> Self {
+    fn new(label_counter: usize) -> Self {
         Lowering {
             next_vreg: 0,
-            label_counter: 0,
+            label_counter,
             body: Vec::new(),
         }
     }
@@ -487,16 +487,22 @@ impl Lowering {
 }
 
 pub fn lower(program: &CheckedProgram) -> Program {
+    let mut label_counter = 0;
     Program {
-        functions: program.functions.iter().map(lower_function).collect(),
+        functions: program
+            .functions
+            .iter()
+            .map(|f| lower_function(f, &mut label_counter))
+            .collect(),
     }
 }
 
-fn lower_function(function: &CheckedFunction) -> Function {
-    let mut lowering = Lowering::new();
+fn lower_function(function: &CheckedFunction, label_counter: &mut usize) -> Function {
+    let mut lowering = Lowering::new(*label_counter);
     for stmt in &function.body {
         lowering.lower_stmt(stmt);
     }
+    *label_counter = lowering.label_counter;
 
     Function {
         name: function.name.clone(),

@@ -1,0 +1,33 @@
+fn count_down(n: int) -> int {
+    if n <= 0 {
+        return 0;
+    }
+    return count_down(n - 1);
+}
+
+fn compute(x: int, y: int) -> int {
+    return (x + y) * (x + y) * 8;
+}
+
+fn main() {
+    let mut code = 0;
+    if 2 + 2 == 4 {
+        code = 1;
+    } else {
+        code = 99;
+    }
+
+    let mut overwritten = 5;
+    overwritten = 6;
+
+    let tail = count_down(2000000);
+
+    let doubled_tail = tail + tail;
+
+    let unused = tail * 3 + 1;
+
+    let cse = compute(2, 1);
+
+    $syscall(1, code + overwritten + doubled_tail + cse, 0, 0, 0, 0, 0);
+    // exit 1 + 6 + 0 + 72 = 79
+}

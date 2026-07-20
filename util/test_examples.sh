@@ -34,6 +34,7 @@ EXAMPLES=(
   "examples/optimization/sub_expr.cfy|49"
   "examples/optimization/repeat_shifts.cfy|40"
   "examples/optimization/tail_calls.cfy|0"
+  "examples/optimization/all_passes.cfy|79"
 )
 
 echo "Building comfyc..."

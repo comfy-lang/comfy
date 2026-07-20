@@ -20,7 +20,7 @@ fn optimize_function(function: &mut Function) {
         changed |= remove_dead_stores(&mut function.body);
         changed |= remove_unused_pure_instrs(&mut function.body);
         changed |= remove_unreachable_code(&mut function.body);
-        changed |= convert_tail_calls(&mut function.body); // NEW
+        changed |= convert_tail_calls(&mut function.body);
         if !changed {
             break;
         }

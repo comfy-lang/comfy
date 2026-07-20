@@ -38,7 +38,7 @@ fn for_each_vreg(instr: &Instr, mut f: impl FnMut(VReg)) {
             f(*dst);
             f(*src);
         }
-        Instr::Unary { dst, src, .. } => {
+        Instr::Unary { dst, src, .. } | Instr::Shl { dst, src, .. } => {
             f(*dst);
             f(*src);
         }
@@ -70,6 +70,11 @@ fn for_each_vreg(instr: &Instr, mut f: impl FnMut(VReg)) {
         Instr::Store { addr, src } => {
             f(*addr);
             f(*src);
+        }
+        Instr::TailCall { args, .. } => {
+            for a in args {
+                f(*a);
+            }
         }
         Instr::Syscall { dst, args } => {
             f(*dst);

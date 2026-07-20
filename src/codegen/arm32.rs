@@ -42,7 +42,7 @@ impl Backend for Arm32Backend {
             emitter.emit_function(function);
         }
 
-        emitter.out
+        crate::codegen::strip_redundant_movs(&emitter.out)
     }
 }
 
@@ -216,6 +216,12 @@ impl Emitter {
                 self.store("r0", *dst);
             }
 
+            ir::Instr::Shl { dst, src, shift } => {
+                self.load("r0", *src);
+                self.out.push_str(&format!("\tlsl r0, r0, #{}\n", shift));
+                self.store("r0", *dst);
+            }
+
             ir::Instr::LoadLocal { dst, offset } => {
                 self.out
                     .push_str(&format!("\tldr r0, [fp, #-{}]\n", offset));
@@ -275,6 +281,17 @@ impl Emitter {
                 self.load("r0", *addr);
                 self.load("r1", *src);
                 self.out.push_str("\tstr r1, [r0]\n");
+            }
+
+            ir::Instr::TailCall { name, args } => {
+                let regs = ["r0", "r1", "r2", "r3"];
+                for (reg, arg) in regs.iter().zip(args) {
+                    self.load(reg, *arg);
+                }
+                self.out.push_str("\tmov sp, fp\n");
+                self.out
+                    .push_str(&format!("\tpop {{{}}}\n", self.saved_regs));
+                self.out.push_str(&format!("\tb {}\n", label_for(name)));
             }
 
             ir::Instr::Syscall { dst, args } => {

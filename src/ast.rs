@@ -18,14 +18,14 @@ impl TypeName {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     Neg,   // -x
     Not,   // !x
     Deref, // *x
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinOp {
     Add,
     Sub,
@@ -34,7 +34,7 @@ pub enum BinOp {
     Rem,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompareOp {
     Eq, // ==
     Ne, // !=

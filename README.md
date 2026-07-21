@@ -1,5 +1,5 @@
 <center>
-<img src="./assets/comfylang.png" alt="comfy logo">
+<img src="./assets/banner.png" alt="comfy logo">
 </center>
 
 **comfylang** is a low-level, statically-typed systems language, with the `comfyc` compiler currently compiling straight to ARM32 assembly.
